@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { api } from '@/lib/api';
-import vaticanTickets from '../data/vatican_static.json';
+import vaticanTickets from '../data/vatican_tickets.json';
 import { X } from 'lucide-react';
 
 interface TaskModalProps {
@@ -230,7 +230,7 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                                         </option>
                                     ))}
                                 </select>
-                                
+
                                 {selectedTicketId && selectedTicketId.startsWith('guided_') && (
                                     <div className="mt-4">
                                         <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">
