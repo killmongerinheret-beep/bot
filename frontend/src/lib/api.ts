@@ -59,20 +59,29 @@ export interface CheckResult {
 }
 
 const getApiUrl = () => {
-    // If we are on the server (SSR), use the Docker service name or localhost
-    if (typeof window === 'undefined') return process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000/api/v1';
-
-    // If we are on the client (Browser)
-    const hostname = window.location.hostname;
-    const protocol = window.location.protocol; // 'http:' or 'https:'
-
-    // If running locally, point to localhost backend
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-        return 'http://localhost:8000/api/v1';
+    // 1. Highest priority: Explicit environment variable (Vercel/Docker)
+    const envUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (envUrl) {
+        // Ensure it has /api/v1 suffix if missing and not just a base URL
+        return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl.replace(/\/$/, '')}/api/v1`;
     }
 
-    // If running on the Server (Hetzner), use same protocol as page
-    return `${protocol}//${hostname}/api/v1`;
+    // 2. Client-side (Browser) logic
+    if (typeof window !== 'undefined') {
+        const hostname = window.location.hostname;
+        const protocol = window.location.protocol;
+
+        // Dev mode fallback
+        if (hostname === 'localhost' || hostname === '127.0.0.1') {
+            return 'http://localhost:8000/api/v1';
+        }
+
+        // Subdomain/Relative fallback
+        return `${protocol}//${hostname}/api/v1`;
+    }
+
+    // 3. Server-side (SSR) fallback
+    return 'http://backend:8000/api/v1';
 };
 
 export const api = {
