@@ -86,13 +86,16 @@ const getApiUrl = () => {
 
 export const api = {
     getApiUrl: getApiUrl,
-    getMyAgency: async (ownerId: string, email: string) => {
+    getMyAgency: async (ownerId?: string, email?: string) => {
         const res = await fetch(`${getApiUrl()}/my-agency/`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ owner_id: ownerId, email }),
+            body: JSON.stringify({
+                owner_id: ownerId || 'local-admin',
+                email: email || 'admin@local.com'
+            }),
         });
         if (!res.ok) throw new Error('Failed to get agency');
         return res.json();

@@ -38,13 +38,13 @@ export default function Sidebar({ activeTab, setActiveTab, className = '' }: Sid
             <nav className="flex-1 space-y-1">
                 <SidebarItem
                     active={activeTab === 'matrix'}
-                    onClick={() => router.push('/dashboard')}
+                    onClick={() => setActiveTab?.('matrix')}
                     icon={<LayoutDashboard className="w-5 h-5" />}
                     label="Overview"
                 />
                 <SidebarItem
                     active={activeTab === 'logs'}
-                    onClick={() => router.push('/dashboard/logs')}
+                    onClick={() => setActiveTab?.('logs')}
                     icon={<Terminal className="w-5 h-5" />}
                     label="Logs"
                 />
@@ -55,7 +55,7 @@ export default function Sidebar({ activeTab, setActiveTab, className = '' }: Sid
 
                 <SidebarItem
                     active={activeTab === 'settings'}
-                    onClick={() => router.push('/dashboard/settings')}
+                    onClick={() => setActiveTab?.('settings')}
                     icon={<Settings className="w-5 h-5" />}
                     label="Settings"
                 />

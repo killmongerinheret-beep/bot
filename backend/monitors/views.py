@@ -105,12 +105,9 @@ class MyAgencyView(APIView):
     authentication_classes = []  # ✅ Disable SessionAuth to bypass CSRF
 
     def post(self, request):
-        owner_id = request.data.get('owner_id')
-        email = request.data.get('email', 'Unknown')
+        owner_id = request.data.get('owner_id', 'local-admin')
+        email = request.data.get('email', 'admin@local.com')
         
-        if not owner_id:
-            return Response({'error': 'owner_id required'}, status=status.HTTP_400_BAD_REQUEST)
-            
         # 1. Try to find by ID first
         agency = Agency.objects.filter(owner_id=owner_id).first()
         created = False
