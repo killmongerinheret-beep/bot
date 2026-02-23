@@ -1,0 +1,75 @@
+[package]
+name = "colosseo-monitor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Elite Automation Team"]
+description = "High-performance Colosseo ticket monitoring core"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full", "parking_lot"] }
+tokio-util = "0.7"
+
+# HTTP client with TLS customization
+reqwest = { version = "0.11", features = ["http2", "rustls-tls", "cookies"] }
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+hyper = { version = "0.14", features = ["full"] }
+
+# HTML parsing
+scraper = "0.18"
+selectors = "0.25"
+
+# gRPC
+tonic = "0.10"
+prost = "0.12"
+tokio-stream = "0.1"
+
+# Redis
+redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Configuration
+config = "0.14"
+
+# Randomization
+rand = "0.8"
+getrandom = "0.2"
+
+# Concurrency
+parking_lot = "0.12"
+crossbeam = "0.8"
+
+# Image processing (for visual confirmation)
+image = { version = "0.24", optional = true }
+
+[build-dependencies]
+tonic-build = "0.10"
+
+[features]
+default = ["visual-confirmation"]
+visual-confirmation = ["image"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

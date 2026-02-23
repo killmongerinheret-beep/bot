@@ -1,0 +1,62 @@
+[
+    {
+        "id": "1750097398",
+        "name": "Standard Entry (Full Price)",
+        "tag": "MV-Biglietti",
+        "visitor_type": 1
+    },
+    {
+        "id": "4498772",
+        "name": "Standard Entry (Reduced)",
+        "tag": "MV-Biglietti",
+        "visitor_type": 1
+    },
+    {
+        "id": "115340888",
+        "name": "Standard Entry (Student)",
+        "tag": "MV-Biglietti",
+        "visitor_type": 1
+    },
+    {
+        "id": "355169404",
+        "name": "Guided Tour (English)",
+        "tag": "MV-Visite-Guidate",
+        "visitor_type": 1
+    },
+    {
+        "id": "1380623678",
+        "name": "Guided Tour (Italian)",
+        "tag": "MV-Visite-Guidate",
+        "visitor_type": 1
+    },
+    {
+        "id": "1269781562",
+        "name": "Guided Tour (French)",
+        "tag": "MV-Visite-Guidate",
+        "visitor_type": 1
+    },
+    {
+        "id": "1232834190",
+        "name": "Guided Tour (Spanish)",
+        "tag": "MV-Visite-Guidate",
+        "visitor_type": 1
+    },
+    {
+        "id": "1",
+        "name": "Any Standard Ticket",
+        "tag": "MV-Biglietti",
+        "visitor_type": 1
+    },
+    {
+        "id": "2",
+        "name": "Any Guided Tour",
+        "tag": "MV-Visite-Guidate",
+        "visitor_type": 1
+    },
+    {
+        "id": "3",
+        "name": "Prime Experience",
+        "tag": "MV-Prime",
+        "visitor_type": 1
+    }
+]

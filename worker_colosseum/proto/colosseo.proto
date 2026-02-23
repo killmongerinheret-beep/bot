@@ -1,0 +1,331 @@
+syntax = "proto3";
+package colosseo;
+
+option go_package = "github.com/colosseo/orchestrator/proto";
+
+// Monitor service for high-frequency availability detection
+service Monitor {
+    // Start monitoring a target, stream availability events
+    rpc StartMonitoring(MonitorRequest) returns (stream AvailabilityEvent);
+    
+    // Stop monitoring a target
+    rpc StopMonitoring(StopRequest) returns (StopResponse);
+    
+    // Get current monitoring status
+    rpc GetStatus(StatusRequest) returns (StatusResponse);
+    
+    // Stream health metrics
+    rpc StreamMetrics(MetricsRequest) returns (stream MetricsEvent);
+}
+
+// Acquisition service for cart injection and payment
+service Acquisition {
+    // Initiate ticket acquisition (add to cart)
+    rpc InitiateAcquisition(AcquisitionRequest) returns (AcquisitionResponse);
+    
+    // Get cart status
+    rpc GetCartStatus(CartStatusRequest) returns (CartStatusResponse);
+    
+    // Complete payment
+    rpc CompletePayment(PaymentRequest) returns (PaymentResponse);
+    
+    // Release cart (abandon purchase)
+    rpc ReleaseCart(ReleaseRequest) returns (ReleaseResponse);
+}
+
+// Configuration service for dynamic target management
+service Config {
+    // Add new monitoring target
+    rpc AddTarget(AddTargetRequest) returns (AddTargetResponse);
+    
+    // Remove monitoring target
+    rpc RemoveTarget(RemoveTargetRequest) returns (RemoveTargetResponse);
+    
+    // Update target configuration
+    rpc UpdateTarget(UpdateTargetRequest) returns (UpdateTargetResponse);
+    
+    // List all targets
+    rpc ListTargets(ListTargetsRequest) returns (ListTargetsResponse);
+}
+
+// Messages
+
+message MonitorRequest {
+    string target_id = 1;
+    string url = 2;
+    TicketType ticket_type = 3;
+    string target_date = 4; // YYYY-MM-DD
+    MonitoringConfig config = 5;
+}
+
+message MonitoringConfig {
+    int32 poll_interval_ms = 1;
+    bool adaptive_polling = 2;
+    float confidence_threshold = 3; // 0.0 - 1.0
+    repeated string proxy_urls = 4;
+}
+
+message AvailabilityEvent {
+    string target_id = 1;
+    int64 timestamp_ms = 2;
+    AvailabilityStatus status = 3;
+    float confidence = 4;
+    repeated DetectionSignal signals = 5;
+    map<string, string> metadata = 6;
+    repeated TimeSlot slots = 7;
+}
+
+message DetectionSignal {
+    SignalSource source = 1;
+    float confidence = 2;
+    int64 timestamp_ms = 3;
+    string metadata_json = 4;
+}
+
+message TimeSlot {
+    string time = 1;
+    int32 available = 2;
+    int32 held = 3;
+    map<string, PriceTier> price_tiers = 4;
+}
+
+message PriceTier {
+    int32 cents = 1;
+    int32 available = 2;
+}
+
+message StopRequest {
+    string target_id = 1;
+}
+
+message StopResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message StatusRequest {
+    string target_id = 1; // Empty for all targets
+}
+
+message StatusResponse {
+    repeated TargetStatus targets = 1;
+}
+
+message TargetStatus {
+    string target_id = 1;
+    MonitoringState state = 2;
+    int64 checks_total = 3;
+    int64 detections_total = 4;
+    int64 last_check_ms = 5;
+    string current_proxy = 6;
+    float health_score = 7;
+}
+
+message MetricsRequest {
+    string target_id = 1;
+}
+
+message MetricsEvent {
+    int64 timestamp_ms = 1;
+    float requests_per_second = 2;
+    float avg_latency_ms = 3;
+    float error_rate = 4;
+    map<string, float> proxy_health = 5;
+}
+
+message AcquisitionRequest {
+    string target_id = 1;
+    string event_id = 2;
+    int32 quantity = 3;
+    PriceTierType tier = 4;
+    repeated Visitor visitors = 5;
+    PaymentMethod preferred_payment = 6;
+    string time_slot = 7;
+}
+
+message Visitor {
+    string name = 1;
+    string email = 2;
+    string birth_date = 3; // YYYY-MM-DD
+    string document_type = 4;
+    string document_number = 5;
+    string country = 6;
+}
+
+message AcquisitionResponse {
+    string cart_id = 1;
+    int64 hold_expires_ms = 2;
+    repeated PaymentOption payment_options = 3;
+    bool success = 4;
+    string error_message = 5;
+}
+
+message PaymentOption {
+    PaymentMethod method = 1;
+    string display_name = 2;
+    bool requires_3ds = 3;
+}
+
+message CartStatusRequest {
+    string cart_id = 1;
+}
+
+message CartStatusResponse {
+    string cart_id = 1;
+    CartState state = 2;
+    int64 expires_ms = 3;
+    repeated CartItem items = 4;
+    int32 total_cents = 5;
+}
+
+message CartItem {
+    string event_id = 1;
+    string date = 2;
+    string time_slot = 3;
+    string ticket_type = 4;
+    int32 quantity = 5;
+    int32 unit_price_cents = 6;
+}
+
+message PaymentRequest {
+    string cart_id = 1;
+    PaymentMethod method = 2;
+    string card_token = 3; // Pre-tokenized card
+    string billing_address_json = 4;
+    bool auto_retry = 5;
+}
+
+message PaymentResponse {
+    bool success = 1;
+    string confirmation_code = 2;
+    string error_message = 3;
+    PaymentState state = 4;
+    int64 timestamp_ms = 5;
+}
+
+message ReleaseRequest {
+    string cart_id = 1;
+    string reason = 2;
+}
+
+message ReleaseResponse {
+    bool success = 1;
+}
+
+message AddTargetRequest {
+    string target_id = 1;
+    string url = 2;
+    TicketType ticket_type = 3;
+    string target_date = 4;
+    int32 priority = 5;
+    map<string, string> selectors = 6;
+}
+
+message AddTargetResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message RemoveTargetRequest {
+    string target_id = 1;
+}
+
+message RemoveTargetResponse {
+    bool success = 1;
+}
+
+message UpdateTargetRequest {
+    string target_id = 1;
+    MonitoringConfig config = 2;
+}
+
+message UpdateTargetResponse {
+    bool success = 1;
+}
+
+message ListTargetsRequest {}
+
+message ListTargetsResponse {
+    repeated TargetInfo targets = 1;
+}
+
+message TargetInfo {
+    string target_id = 1;
+    string url = 2;
+    TicketType ticket_type = 3;
+    string target_date = 4;
+    int32 priority = 5;
+    bool active = 6;
+}
+
+// Enums
+
+enum TicketType {
+    UNKNOWN_TYPE = 0;
+    ORDINARIO = 1;
+    FULL_EXPERIENCE_ARENA = 2;
+    FULL_EXPERIENCE_UNDERGROUND = 3;
+    FORUM_PASS_SUPER = 4;
+}
+
+enum AvailabilityStatus {
+    UNKNOWN_STATUS = 0;
+    AVAILABLE = 1;
+    SOLD_OUT = 2;
+    NOT_YET_RELEASED = 3;
+    UNCERTAIN = 4;
+}
+
+enum SignalSource {
+    UNKNOWN_SOURCE = 0;
+    API_RESPONSE = 1;
+    DOM_MUTATION = 2;
+    VISUAL_CONFIRMATION = 3;
+    TIMING_ANALYSIS = 4;
+    CROSS_SESSION = 5;
+}
+
+enum MonitoringState {
+    UNKNOWN_STATE = 0;
+    MONITORING = 1;
+    DETECTED = 2;
+    CARTING = 3;
+    HOLDING = 4;
+    PAYING = 5;
+    CONFIRMED = 6;
+    FAILED = 7;
+    STOPPED = 8;
+}
+
+enum PriceTierType {
+    UNKNOWN_TIER = 0;
+    INTERO = 1;      // Full price
+    RIDOTTO = 2;     // Reduced
+    GRATUITO = 3;    // Free
+}
+
+enum PaymentMethod {
+    UNKNOWN_METHOD = 0;
+    UNICREDIT_CARD = 1;
+    PAYPAL = 2;
+    BANK_TRANSFER = 3;
+    VIRTUAL_CARD = 4;
+}
+
+enum CartState {
+    UNKNOWN_CART_STATE = 0;
+    ACTIVE = 1;
+    EXPIRED = 2;
+    PAID = 3;
+    RELEASED = 4;
+}
+
+enum PaymentState {
+    UNKNOWN_PAYMENT_STATE = 0;
+    PENDING = 1;
+    PROCESSING = 2;
+    REQUIRES_3DS = 3;
+    COMPLETED = 4;
+    FAILED = 5;
+    REFUNDED = 6;
+}

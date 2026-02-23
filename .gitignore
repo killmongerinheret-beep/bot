@@ -1,0 +1,34 @@
+# Environment variables
+.env
+.env.local
+.env.*
+
+# Logs
+*.log
+*.txt
+worker_log.txt
+beat_log.txt
+ps_status.txt
+backend_debug.log
+backend_debug_2.log
+full_stack_debug.log
+
+# Docker
+.docker_id
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Node/Next.js
+node_modules/
+.next/
+out/
+build/
+
+# OS
+.DS_Store
+Thumbs.db

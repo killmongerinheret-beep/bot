@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: var(--background);
+  --color-graphite: var(--card);
+  --color-stroke: var(--border);
+  --color-stroke-hover: var(--border-hover);
+  --color-white: var(--foreground);
+  --color-ash: var(--muted-foreground);
+  --color-signal: #00E37C;
+  --color-error: #FF4D4D;
+  --font-sans: 'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #050505;
+    --card: #f4f4f5;
+    --card-foreground: #050505;
+    --popover: #ffffff;
+    --popover-foreground: #09090b;
+    --primary: #00E37C;
+    --primary-foreground: #050505;
+    --secondary: #f4f4f5;
+    --secondary-foreground: #18181b;
+    --muted: #f4f4f5;
+    --muted-foreground: #71717a;
+    --accent: #f4f4f5;
+    --accent-foreground: #18181b;
+    --destructive: #ef4444;
+    --destructive-foreground: #fafafa;
+    --border: #e4e4e7;
+    --border-hover: #d4d4d8;
+    --input: #e4e4e7;
+    --ring: #00E37C;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: #050505;
+    --foreground: #ffffff;
+    --card: #0F0F0F;
+    --card-foreground: #ffffff;
+    --popover: #050505;
+    --popover-foreground: #fafafa;
+    --primary: #00E37C;
+    --primary-foreground: #050505;
+    --secondary: #27272a;
+    --secondary-foreground: #fafafa;
+    --muted: #27272a;
+    --muted-foreground: #888888;
+    --accent: #27272a;
+    --accent-foreground: #fafafa;
+    --destructive: #7f1d1d;
+    --destructive-foreground: #fafafa;
+    --border: #262626;
+    --border-hover: #404040;
+    --input: #27272a;
+    --ring: #00E37C;
+  }
+}
+
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('https://assets.vercel.com/raw/upload/v1600360411/geist/GeistVF.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  body {
+    @apply bg-void text-white font-sans antialiased;
+    line-height: 1.6;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer components {
+  .h1-hero {
+    @apply text-6xl md:text-8xl font-semibold tracking-tighter leading-none;
+  }
+
+  .h2-section {
+    @apply text-3xl md:text-5xl font-semibold tracking-tight leading-tight;
+  }
+
+  .bento-card {
+    @apply bg-graphite border border-stroke rounded-3xl p-8 flex flex-col justify-between overflow-hidden transition-all duration-300;
+  }
+
+  .bento-card:hover {
+    @apply border-stroke-hover;
+  }
+
+  .btn-primary {
+    @apply bg-signal text-void px-8 py-4 rounded-full font-medium text-sm inline-flex items-center gap-2 transition-all duration-200;
+  }
+
+  .btn-primary:hover {
+    @apply scale-105;
+  }
+
+  .btn-secondary {
+    @apply bg-transparent text-white px-8 py-4 rounded-full font-medium text-sm border border-stroke transition-all duration-200;
+  }
+
+  .btn-secondary:hover {
+    @apply border-stroke-hover bg-white/5;
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-2 bg-signal/10 border border-signal/20 text-signal px-4 py-2 rounded-full text-sm font-medium;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-void);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-stroke);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-stroke-hover);
+}

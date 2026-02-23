@@ -1,0 +1,144 @@
+{
+    "title": "Recording 01/02/2026 at 15:27:16",
+    "steps": [
+        {
+            "type": "setViewport",
+            "width": 911,
+            "height": 695,
+            "deviceScaleFactor": 1,
+            "isMobile": false,
+            "hasTouch": false,
+            "isLandscape": false
+        },
+        {
+            "type": "navigate",
+            "url": "https://tickets.museivaticani.va/home/fromtag/2/1771542000000/MV-Biglietti/1",
+            "assertedEvents": [
+                {
+                    "type": "navigation",
+                    "url": "https://tickets.museivaticani.va/home/fromtag/2/1771542000000/MV-Biglietti/1",
+                    "title": "Musei Vaticani"
+                }
+            ]
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "[data-cy='bookTicket_1060934973']"
+                ],
+                [
+                    "xpath///*[@data-cy=\"bookTicket_1060934973\"]"
+                ],
+                [
+                    "pierce/[data-cy='bookTicket_1060934973']"
+                ]
+            ],
+            "offsetY": 36.512481689453125,
+            "offsetX": 75.6875
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "[data-cy='bookTicket_1815990107']"
+                ],
+                [
+                    "xpath///*[@data-cy=\"bookTicket_1815990107\"]"
+                ],
+                [
+                    "pierce/[data-cy='bookTicket_1815990107']"
+                ]
+            ],
+            "offsetY": 9.699981689453125,
+            "offsetX": 54.6875
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "[data-cy='visitLang']"
+                ],
+                [
+                    "xpath///*[@data-cy=\"visitLang\"]"
+                ],
+                [
+                    "pierce/[data-cy='visitLang']"
+                ]
+            ],
+            "offsetY": 12.39996337890625,
+            "offsetX": 132.39999389648438
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "app-ticket-visit-language div:nth-of-type(3)"
+                ],
+                [
+                    "xpath///*[@id=\"muvaTicketDetailContainer_1815990107\"]/form/app-ticket-visit-language/div/div[2]/div/div[1]/app-dropdown/article/section/div[3]"
+                ],
+                [
+                    "pierce/app-ticket-visit-language div:nth-of-type(3)"
+                ]
+            ],
+            "offsetY": 21.600006103515625,
+            "offsetX": 86.60000610351562
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "[data-cy='bookTicket_1381974320']"
+                ],
+                [
+                    "xpath///*[@data-cy=\"bookTicket_1381974320\"]"
+                ],
+                [
+                    "pierce/[data-cy='bookTicket_1381974320']"
+                ]
+            ],
+            "offsetY": 18.300003051757812,
+            "offsetX": 69.6875
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "[data-cy='visitLang']"
+                ],
+                [
+                    "xpath///*[@data-cy=\"visitLang\"]"
+                ],
+                [
+                    "pierce/[data-cy='visitLang']"
+                ]
+            ],
+            "offsetY": 14.79998779296875,
+            "offsetX": 143.39999389648438
+        },
+        {
+            "type": "click",
+            "target": "main",
+            "selectors": [
+                [
+                    "app-ticket-visit-language div:nth-of-type(4)"
+                ],
+                [
+                    "xpath///*[@id=\"muvaTicketDetailContainer_1381974320\"]/form/app-ticket-visit-language/div/div[2]/div/div[1]/app-dropdown/article/section/div[4]"
+                ],
+                [
+                    "pierce/app-ticket-visit-language div:nth-of-type(4)"
+                ]
+            ],
+            "offsetY": 4,
+            "offsetX": 87.60000610351562
+        }
+    ]
+}

@@ -1,0 +1,86 @@
+# ==============================================
+# LOCAL WINDOWS DEVELOPMENT CONFIG
+# ==============================================
+# Docker Compose for running the full stack on your PC
+# Usage: docker compose -f docker-compose-local.yml up -d
+# ==============================================
+
+services:
+  db:
+    image: postgres:15
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=ticketbot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: .
+    restart: always
+    command: >
+      sh -c "cd /app/backend &&
+             python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn core.wsgi:application --bind 0.0.0.0:8000 --timeout 120 --workers 2"
+    volumes:
+      - .:/app
+      - static_volume:/app/backend/staticfiles
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=1
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/ticketbot
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OXYLABS_USERNAME=${OXYLABS_USERNAME}
+      - OXYLABS_PASSWORD=${OXYLABS_PASSWORD}
+      - PYTHONPATH=/app/backend:/app
+      - STATIC_ROOT=/app/backend/staticfiles
+    depends_on:
+      - db
+      - redis
+
+  worker_vatican:
+    build: .
+    restart: always
+    command: celery -A backend.core worker -l info -Q vatican,celery --concurrency=2
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/ticketbot
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OXYLABS_USERNAME=${OXYLABS_USERNAME}
+      - OXYLABS_PASSWORD=${OXYLABS_PASSWORD}
+      - PYTHONPATH=/app/backend:/app
+    depends_on:
+      - db
+      - redis
+
+  beat:
+    build: .
+    restart: always
+    command: celery -A backend.core beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/ticketbot
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - PYTHONPATH=/app/backend:/app
+    depends_on:
+      - db
+      - redis
+
+volumes:
+  postgres_data:
+  static_volume:
