@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
+import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -43,6 +44,10 @@ _CLOUDFLARE_TUNNEL_DOMAIN = os.getenv('CLOUDFLARE_TUNNEL_DOMAIN', '')
 if _CLOUDFLARE_TUNNEL_DOMAIN:
     CSRF_TRUSTED_ORIGINS.append(f'https://{_CLOUDFLARE_TUNNEL_DOMAIN}')
 
+# Auto-trust trycloudflare patterns
+CSRF_TRUSTED_ORIGINS.append('https://*.trycloudflare.com')
+CSRF_TRUSTED_ORIGINS.append('https://*.vercel.app')
+
 # Secure Proxy SSL Header (Required for HTTPS behind Nginx)
 # This tells Django to trust the X-Forwarded-Proto header set by Nginx
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -50,8 +55,6 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # Session & CSRF Security
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
-
-import environ
 
 # Initialize environ
 env = environ.Env(
