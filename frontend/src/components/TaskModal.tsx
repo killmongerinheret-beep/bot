@@ -217,16 +217,16 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                                         if (ticket) {
                                             setSelectedTicketId(ticket.id);
                                             setSelectedTicketName(ticket.name);
-                                            setSelectedLanguage((ticket as any).language || null);
+                                            // Language is handled separately or inferred, not in this JSON
                                             setFormData({ ...formData, area_name: ticket.tag });
                                         }
                                     }}
                                     className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
                                 >
                                     <option value="">-- Select Ticket --</option>
-                                    {vaticanTickets.map((ticket) => (
+                                    {vaticanTickets.map((ticket: any) => (
                                         <option key={ticket.id} value={ticket.id}>
-                                            {ticket.displayName}
+                                            {ticket.name}
                                         </option>
                                     ))}
                                 </select>
