@@ -42,7 +42,7 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
     };
 
     const removeDate = (dateToRemove: string) => {
-        setFormData({ ...formData, dates: formData.dates.filter(d => d !== dateToRemove) });
+        setFormData({ ...formData, dates: formData.dates.filter((d: string) => d !== dateToRemove) });
     };
 
     const areaOptions = {
@@ -73,7 +73,7 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
             const payload = {
                 ...formData,
                 agency: agencyId,
-                preferred_times: formData.preferred_times.split(',').map(t => t.trim()).filter(Boolean),
+                preferred_times: formData.preferred_times.split(',').map((t: string) => t.trim()).filter(Boolean),
                 ticket_id: selectedTicketId || undefined,
                 ticket_name: selectedTicketName || undefined,
                 language: selectedLanguage || formData.language,
@@ -212,12 +212,12 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                                 </label>
                                 <select
                                     value={selectedTicketId || ''}
-                                    onChange={(e) => {
-                                        const ticket = vaticanTickets.find(t => t.id === e.target.value);
+                                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                                        const ticket = vaticanTickets.find((t: any) => t.id === e.target.value);
                                         if (ticket) {
                                             setSelectedTicketId(ticket.id);
                                             setSelectedTicketName(ticket.name);
-                                            setSelectedLanguage(ticket.language || null);
+                                            setSelectedLanguage((ticket as any).language || null);
                                             setFormData({ ...formData, area_name: ticket.tag });
                                         }
                                     }}
