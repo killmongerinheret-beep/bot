@@ -75,26 +75,84 @@ async def scrape_ids():
                     # We want the ID from data-cy="bookTicket_{ID}"
                     # AND the Title (usually in a h1/h2/div above it)
                     
-                    # Script to extract
+                    # Script to extract with improved DOM traversal
                     items = await page.evaluate("""() => {
                         const results = [];
-                        const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
                         
-                        buttons.forEach(btn => {
+                        // Step 1: Get all ticket titles
+                        const titles = [];
+                        document.querySelectorAll('.muvaTicketTitle').forEach(el => {
+                            titles.push({
+                                text: el.textContent.trim(),
+                                element: el
+                            });
+                        });
+                        
+                        // Step 2: Get all buttons with IDs
+                        const buttons = [];
+                        document.querySelectorAll("[data-cy^='bookTicket_']").forEach(btn => {
                             const id = btn.getAttribute("data-cy").split("_")[1];
+                            buttons.push({
+                                id: id,
+                                element: btn
+                            });
+                        });
+                        
+                        // Step 3: Try to match titles with buttons
+                        titles.forEach(titleInfo => {
+                            const titleEl = titleInfo.element;
+                            let matchedButton = null;
                             
-                            // Find Title: Go up to .card-body or similar container, then find .card-title
-                            let container = btn.closest('div.card') || btn.closest('div.row') || btn.parentElement.parentElement;
-                            let title = "Unknown Title";
+                            let container = titleEl.closest('app-ticket-card') || 
+                                           titleEl.closest('.card') || 
+                                           titleEl.closest('[class*="ticket"]') ||
+                                           titleEl.closest('div[class*="muva"]');
                             
                             if (container) {
-                                const titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .title-class');
-                                if (titleEl) title = titleEl.innerText.trim();
-                                else title = container.innerText.split('\\n')[0].substring(0, 50);
+                                const btn = container.querySelector('[data-cy^="bookTicket_"]');
+                                if (btn) {
+                                    matchedButton = btn.getAttribute("data-cy").split("_")[1];
+                                }
                             }
                             
-                            results.push({id, title});
+                            if (matchedButton) {
+                                results.push({
+                                    id: matchedButton,
+                                    title: titleInfo.text
+                                });
+                            }
                         });
+                        
+                        // Step 4: For unmatched buttons, search up parent tree
+                        buttons.forEach(btnInfo => {
+                            const alreadyMatched = results.some(r => r.id === btnInfo.id);
+                            if (alreadyMatched) return;
+                            
+                            const btn = btnInfo.element;
+                            let title = "Unknown Title";
+                            
+                            // Search up to 10 parent levels
+                            let parent = btn.parentElement;
+                            for (let i = 0; i < 10 && parent; i++) {
+                                const titleEl = parent.querySelector('.muvaTicketTitle, h1, h2, h3, h4, .card-title, .title-class');
+                                if (titleEl && titleEl.innerText && titleEl.innerText.trim()) {
+                                    title = titleEl.innerText.trim();
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                            }
+                            
+                            // Fallback: use container text
+                            if (title === "Unknown Title") {
+                                let container = btn.closest('div.card') || btn.closest('div.row') || btn.parentElement.parentElement;
+                                if (container && container.innerText) {
+                                    title = container.innerText.split('\\n')[0].substring(0, 50);
+                                }
+                            }
+                            
+                            results.push({id: btnInfo.id, title: title});
+                        });
+                        
                         return results;
                     }""")
                     

@@ -18,6 +18,7 @@ interface TicketItem {
 
 interface TicketSelectorProps {
     date: string;
+    visitors: number;
     selectedTicketId: string | null;
     selectedTicketName: string | null;
     selectedLanguage: string | null;
@@ -27,6 +28,7 @@ interface TicketSelectorProps {
 
 export default function TicketSelector({
     date,
+    visitors,
     selectedTicketId,
     selectedLanguage,
     onSelectTicket,
@@ -48,7 +50,7 @@ export default function TicketSelector({
             try {
                 setLoading(true);
                 setError(null);
-                const data = await api.getVaticanTickets(date);
+                const data = await api.getVaticanTickets(date, visitors);
                 setTickets(data.tickets || []);
                 setGrouped(data.grouped || {});
 

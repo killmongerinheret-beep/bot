@@ -219,7 +219,7 @@ class GodTierVaticanMonitor:
             logger.debug(f"Session validation failed: {e}")
             return False
     
-    async def refresh_session_with_browser(self, ticket_type: int = 0, target_date: str = "27/02/2026") -> bool:
+    async def refresh_session_with_browser(self, ticket_type: int = 0, target_date: str = "27/02/2026", visitors: int = 2) -> bool:
         """
         Use Playwright browser to get fresh session cookies and IDs.
         Only called when headless mode fails.
@@ -297,7 +297,7 @@ class GodTierVaticanMonitor:
                 ts = int(midnight.timestamp() * 1000)
                 
                 slug = "MV-Biglietti" if ticket_type == 0 else "MV-Visite-Guidate"
-                visitors = 3 if ticket_type == 0 else 2
+                # Use the visitors parameter passed to the function
                 deep_url = f"https://tickets.museivaticani.va/home/fromtag/{visitors}/{ts}/{slug}/1"
                 
                 logger.info(f"🕸️ Navigating to: {deep_url}")
@@ -307,21 +307,84 @@ class GodTierVaticanMonitor:
                 # Extract cookies
                 cookies = await context.cookies()
                 
-                # Extract ticket IDs
+                # Extract ticket IDs with improved DOM traversal
                 ids = await page.evaluate("""
                     () => {
                         const results = [];
-                        const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
-                        buttons.forEach(btn => {
-                            const id = btn.getAttribute("data-cy").split("_")[1];
-                            let container = btn.closest('div.card') || btn.closest('div.row') || btn.parentElement?.parentElement;
-                            let title = "Unknown";
-                            if (container) {
-                                const titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .muvaTicketTitle');
-                                if (titleEl) title = titleEl.innerText.trim();
-                            }
-                            results.push({id: id, name: title});
+                        
+                        // Step 1: Get all ticket titles
+                        const titles = [];
+                        document.querySelectorAll('.muvaTicketTitle').forEach(el => {
+                            titles.push({
+                                text: el.textContent.trim(),
+                                element: el
+                            });
                         });
+                        
+                        // Step 2: Get all buttons with IDs
+                        const buttons = [];
+                        document.querySelectorAll('[data-cy^="bookTicket_"]').forEach(btn => {
+                            const dataCy = btn.getAttribute('data-cy');
+                            const id = dataCy ? dataCy.split('_')[1] : null;
+                            buttons.push({
+                                id: id,
+                                element: btn
+                            });
+                        });
+                        
+                        // Step 3: Try to match titles with buttons
+                        titles.forEach(titleInfo => {
+                            const titleEl = titleInfo.element;
+                            let matchedButton = null;
+                            
+                            // Try to find button in same container
+                            let container = titleEl.closest('app-ticket-card') || 
+                                           titleEl.closest('.card') || 
+                                           titleEl.closest('.ticket-container') ||
+                                           titleEl.closest('[class*="ticket"]') ||
+                                           titleEl.closest('div[class*="muva"]');
+                            
+                            if (container) {
+                                const btn = container.querySelector('[data-cy^="bookTicket_"]');
+                                if (btn) {
+                                    const dataCy = btn.getAttribute('data-cy');
+                                    matchedButton = dataCy ? dataCy.split('_')[1] : null;
+                                }
+                            }
+                            
+                            if (matchedButton) {
+                                results.push({
+                                    id: matchedButton,
+                                    name: titleInfo.text
+                                });
+                            }
+                        });
+                        
+                        // Step 4: For unmatched buttons, search up parent tree
+                        buttons.forEach(btnInfo => {
+                            const alreadyMatched = results.some(r => r.id === btnInfo.id);
+                            if (alreadyMatched) return;
+                            
+                            const btn = btnInfo.element;
+                            let name = 'Unknown';
+                            
+                            // Search up to 10 parent levels
+                            let parent = btn.parentElement;
+                            for (let i = 0; i < 10 && parent; i++) {
+                                const titleEl = parent.querySelector('.muvaTicketTitle, h1, h2, h3, h4, .card-title, [class*="title"], [class*="Title"]');
+                                if (titleEl && titleEl.textContent.trim()) {
+                                    name = titleEl.textContent.trim();
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                            }
+                            
+                            results.push({
+                                id: btnInfo.id,
+                                name: name
+                            });
+                        });
+                        
                         return results;
                     }
                 """)
@@ -345,7 +408,8 @@ class GodTierVaticanMonitor:
         self, 
         date_str: str, 
         ticket_type: int = 0,
-        languages: List[str] = None
+        languages: List[str] = None,
+        visitors: int = 2
     ) -> List[Dict]:
         """
         Check ticket availability using headless HTTP mode.
@@ -356,7 +420,7 @@ class GodTierVaticanMonitor:
         # Validate session first
         if not await self.validate_session():
             logger.info("⏰ Session invalid, refreshing...")
-            if not await self.refresh_session_with_browser(ticket_type, date_str):
+            if not await self.refresh_session_with_browser(ticket_type, date_str, visitors=visitors):
                 logger.error("❌ Failed to refresh session")
                 return results
         
@@ -364,7 +428,7 @@ class GodTierVaticanMonitor:
         cached_ids = self.session_cache.get("ids_cache", {}).get(date_str, [])
         if not cached_ids:
             logger.info(f"🔍 No cached IDs for {date_str}, harvesting...")
-            if not await self.refresh_session_with_browser(ticket_type, date_str):
+            if not await self.refresh_session_with_browser(ticket_type, date_str, visitors=visitors):
                 return results
             cached_ids = self.session_cache.get("ids_cache", {}).get(date_str, [])
         
@@ -424,7 +488,7 @@ class GodTierVaticanMonitor:
                 if ticket_type == 1 and not is_guided:
                     continue
                 
-                visitors = 3 if ticket_type == 0 else 2
+                # Use the visitors parameter passed to the function
                 
                 for lang_code in languages:
                     api_lang = lang_map.get(lang_code, "en")

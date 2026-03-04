@@ -1,0 +1,79 @@
+{
+  "cookies": [
+    {
+      "name": "JSESSIONID",
+      "value": "9FDDBD97FC8BBA1FE00489F46E1D6F96",
+      "domain": "tickets.museivaticani.va",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "ticketmv",
+      "value": "02",
+      "domain": "tickets.museivaticani.va",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "SERVERID",
+      "value": "04|aahqj",
+      "domain": "tickets.museivaticani.va",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "ids_cache": {
+    "2026-03-09": [
+      {
+        "id": "1039534832",
+        "name": "Musei Vaticani - Biglietti d'ingresso"
+      },
+      {
+        "id": "1878541587",
+        "name": "Musei Vaticani - Visite Guidate Singoli Musei"
+      },
+      {
+        "id": "2101757850",
+        "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
+      },
+      {
+        "id": "1952947008",
+        "name": "Musei Vaticani - Visite Guidate Singoli Giardini e Musei"
+      },
+      {
+        "id": "28679624",
+        "name": "Musei Vaticani - Visite Guidate Gruppi Giardini e Musei"
+      },
+      {
+        "id": "103085045",
+        "name": "Musei Vaticani - Visite Guidate Singoli Quaresima ai Musei Vaticani"
+      },
+      {
+        "id": "1188345674",
+        "name": "Musei Vaticani - Vatican City Tours - Open Bus Giardini"
+      },
+      {
+        "id": "1442382623",
+        "name": "Musei Vaticani - Reparti Chiusi - Bramante e Niccolina"
+      },
+      {
+        "id": "1293571781",
+        "name": "Musei Vaticani - Reparti Chiusi - Scala del Bramante"
+      },
+      {
+        "id": "1367977202",
+        "name": "Musei Vaticani - Reparti Chiusi - Cappella Niccolina"
+      }
+    ]
+  },
+  "last_updated": "2026-03-04T17:23:23.583697"
+}

@@ -88,15 +88,32 @@ export default function TaskCard({ task, onDelete }: TaskCardProps) {
         }
     };
 
-    // Get available slots from latest_check
+    // Get available slots from latest_check (handles both flattened and date-keyed payloads)
     const getAvailableSlots = (): string[] => {
-        if (!task.latest_check?.details?.slots) return [];
-        const slots = task.latest_check.details.slots;
-        // slots can be array of strings or array of objects with 'time' property
-        return slots.map((slot: any) => {
-            if (typeof slot === 'string') return slot;
-            return slot.time || slot;
-        }).filter(Boolean);
+        const details: any = task.latest_check?.details;
+        if (!details) return [];
+        // Case A: details.slots exists (flattened)
+        if (Array.isArray(details.slots)) {
+            return details.slots
+                .map((slot: any) => (typeof slot === 'string' ? slot : slot?.time || slot))
+                .filter(Boolean);
+        }
+        // Case B: details is a map: { "DD/MM/YYYY": [ { slots: [...] }, ... ] }
+        if (typeof details === 'object') {
+            const times: string[] = [];
+            Object.values(details).forEach((items: any) => {
+                if (Array.isArray(items)) {
+                    items.forEach((it: any) => {
+                        const arr = it?.slots || [];
+                        arr.forEach((s: any) => {
+                            times.push(typeof s === 'string' ? s : s?.time || s);
+                        });
+                    });
+                }
+            });
+            return times.filter(Boolean);
+        }
+        return [];
     };
 
     const checkInfo = getLastCheckInfo();
@@ -183,6 +200,31 @@ export default function TaskCard({ task, onDelete }: TaskCardProps) {
                     )}
                 </div>
             </div>
+            
+            {/* Preferred Times (Selected) */}
+            {Array.isArray(task.preferred_times) && task.preferred_times.length > 0 && (
+                <div className="mb-4">
+                    <div className="flex items-center gap-2 text-[#888888] text-xs mb-2">
+                        <Clock className="w-3.5 h-3.5" />
+                        <span className="uppercase tracking-wider font-medium">Preferred Times</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {task.preferred_times.slice(0, 6).map((t, i) => (
+                            <span
+                                key={i}
+                                className="bg-[#1a1a1a] border border-[#262626] text-[#888888] px-2.5 py-1 rounded-lg text-xs font-mono"
+                            >
+                                {t}
+                            </span>
+                        ))}
+                        {task.preferred_times.length > 6 && (
+                            <span className="bg-[#1a1a1a] border border-[#262626] text-[#888888] px-3 py-1.5 rounded-lg text-xs">
+                                +{task.preferred_times.length - 6} more
+                            </span>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Available Slots - NEW SECTION */}
             {isAvailable && availableSlots.length > 0 && (

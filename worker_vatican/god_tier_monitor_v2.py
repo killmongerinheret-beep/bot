@@ -5,6 +5,7 @@ Fixed version with:
 - Proper API session validation
 - Correct cookie handling for HTTP API
 - Better error handling and logging
+- Playwright for ID extraction (required for dynamic content)
 """
 
 import asyncio
@@ -22,6 +23,7 @@ try:
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
+    logger.warning("⚠️ Playwright not available - ID harvesting will fail")
 
 # Configure Logging
 logging.basicConfig(
@@ -44,13 +46,25 @@ RETRY_BASE_DELAY = 1.0
 class GodTierVaticanMonitorV2:
     """
     Ultra-fast Vatican ticket monitor with fixed session handling.
+    Uses curl_cffi for API checks and Playwright for ID extraction.
     """
     
     def __init__(self, proxies: List[str] = None, sticky_proxy: bool = True):
-        self.proxies = proxies or self._load_proxies()
+        self.proxies = proxies if proxies is not None else self._load_proxies()
         self.session_cache = self._load_session()
-        self.semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
-        self.rate_limit_delay = 1.0 / RATE_LIMIT_RPS
+        # Allow runtime overrides for bandwidth control
+        try:
+            conc_override = int(os.getenv("VATICAN_CONCURRENCY", "").strip())
+        except Exception:
+            conc_override = 0
+        try:
+            rps_override = float(os.getenv("VATICAN_RPS", "").strip())
+        except Exception:
+            rps_override = 0.0
+        effective_concurrency = conc_override if conc_override > 0 else CONCURRENT_REQUESTS
+        effective_rps = rps_override if rps_override > 0 else RATE_LIMIT_RPS
+        self.semaphore = asyncio.Semaphore(effective_concurrency)
+        self.rate_limit_delay = 1.0 / max(effective_rps, 1.0)
         self.last_request_time = 0
         
         # Sticky proxy
@@ -68,7 +82,13 @@ class GodTierVaticanMonitorV2:
             if proxy_env:
                 return proxy_env.split(',')
             
-            search_paths = ["/app", ".", "..", "../.."]
+            base_here = os.path.dirname(os.path.abspath(__file__))
+            search_paths = [
+                _SCRIPT_DIR,             # Look in current script dir first (worker_vatican)
+                ".",                    # Then root
+                "..",                   # Then parent
+                "/app"                  # Then docker container path
+            ]
             for base_dir in search_paths:
                 json_path = os.path.join(base_dir, "Proxy lists.json")
                 if os.path.exists(json_path):
@@ -104,18 +124,34 @@ class GodTierVaticanMonitorV2:
                 logger.error(f"❌ Failed to load session: {e}")
         return {"cookies": [], "ids_cache": {}, "last_updated": ""}
     
-    def _save_session(self, cookies: List[Dict], ids_cache: Dict):
-        """Save session to file."""
+    def _save_session(self, cookies: List[Dict], new_ids_dict: Dict):
+        """Save session to file, merging IDs into existing cache."""
         try:
+            # Deep merge new IDs into the existing cache list-by-list
+            existing_cache = self.session_cache.get("ids_cache", {})
+            
+            for date_key, fresh_list in new_ids_dict.items():
+                current_list = existing_cache.get(date_key, [])
+                # Create a set of existing IDs for de-duplication
+                seen_ids = {str(item.get('id', '')) for item in current_list if item.get('id')}
+                
+                # Append only new ones
+                for item in fresh_list:
+                    if str(item.get('id', '')) not in seen_ids:
+                        current_list.append(item)
+                        seen_ids.add(str(item.get('id', '')))
+                
+                existing_cache[date_key] = current_list
+            
             data = {
                 "cookies": cookies,
-                "ids_cache": ids_cache,
+                "ids_cache": existing_cache,
                 "last_updated": datetime.now().isoformat()
             }
             os.makedirs(os.path.dirname(SESSION_FILE) or ".", exist_ok=True)
             with open(SESSION_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
-            logger.info("💾 Session cached successfully")
+            logger.info(f"💾 Session cached successfully (IDs tracked: {len(existing_cache.get('__ALL__', []))})")
             self.session_cache = data
         except Exception as e:
             logger.error(f"❌ Failed to save session: {e}")
@@ -205,19 +241,28 @@ class GodTierVaticanMonitorV2:
                 session.headers.update({
                     "Referer": "https://tickets.museivaticani.va/",
                     "Accept": "application/json, text/plain, */*",
-                    "X-Requested-With": "XMLHttpRequest"
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive"
                 })
                 
                 # Test with a real API call - use a known ticket ID or the home endpoint
                 # The home/info endpoint is lightweight and good for validation
-                resp = await session.get(
-                    "https://tickets.museivaticani.va/api/home/info",
-                    timeout=10
-                )
+                # Call initValues first to establish session state
+                await session.get("https://tickets.museivaticani.va/api/config/initValues", timeout=10)
+                
+                # Use startup endpoint instead of info
+                resp = await session.get("https://tickets.museivaticani.va/api/config/startup?lang=it", timeout=10)
                 
                 if resp.status_code == 200:
-                    logger.info("✅ API session validation passed")
-                    return True
+                    try:
+                        data = resp.json()
+                        if data.get("maintenance") == "off":
+                            logger.info("✅ API session validation passed (startup)")
+                            return True
+                    except:
+                        logger.warning("⚠️ Session validation response was not JSON")
                 else:
                     logger.warning(f"❌ API session validation failed: HTTP {resp.status_code}")
                     return False
@@ -226,8 +271,8 @@ class GodTierVaticanMonitorV2:
             logger.debug(f"Session validation error: {e}")
             return False
     
-    async def refresh_session_with_browser(self, ticket_type: int = 0, target_date: str = "27/02/2026") -> bool:
-        """Use Playwright browser to get fresh session cookies and IDs."""
+    async def refresh_session_with_browser(self, ticket_type: int = 0, target_date: str = "27/02/2026", visitors: int = None) -> bool:
+        """Use Playwright browser to get fresh session cookies and DYNAMIC IDs."""
         if not HAS_PLAYWRIGHT:
             logger.error("❌ Playwright not installed")
             return False
@@ -235,31 +280,46 @@ class GodTierVaticanMonitorV2:
         logger.info("🔄 Refreshing session with browser...")
         
         try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as dt
+            
+            # Build deep link
+            if "/" in target_date:
+                day, month, year = target_date.split('/')
+                dt_obj = dt(int(year), int(month), int(day))
+            else:
+                dt_obj = dt.strptime(target_date, "%Y-%m-%d")
+            
+            rome = ZoneInfo("Europe/Rome")
+            midnight = dt_obj.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=rome)
+            ts = int(midnight.timestamp() * 1000)
+            
+            # Use correct slug based on ticket type
+            slug = "MV-Biglietti" if ticket_type == 0 else "MV-Visite-Guidate"
+            
+            # Determine effective visitor count
+            try:
+                env_visitors = int(os.getenv("VATICAN_VISITORS", "").strip())
+            except Exception:
+                env_visitors = 0
+            
+            eff_visitors = visitors if (isinstance(visitors, int) and visitors > 0) else (env_visitors if env_visitors > 0 else 2)
+            
+            # ✅ CORRECT FORMAT: Use /fromtag/ with proper structure
+            # Format: /home/fromtag/{visitors}/{timestamp}/{slug}/1
+            if ticket_type == 0:
+                slug = "MV-Biglietti"
+            else:
+                slug = "MV-Visite-Guidate"
+            
+            deep_url = f"https://tickets.museivaticani.va/home/fromtag/{eff_visitors}/{ts}/{slug}/1"
+            
+            logger.info(f"🔗 Navigating to: {deep_url}")
+            
             async with async_playwright() as p:
-                proxy_str = self.current_proxy if self.sticky_proxy and self.current_proxy else (random.choice(self.proxies) if self.proxies else None)
-                proxy_config = None
-                
-                if proxy_str and ":" in proxy_str:
-                    parts = proxy_str.split(':')
-                    if len(parts) == 4:
-                        proxy_config = {
-                            "server": f"http://{parts[0]}:{parts[1]}",
-                            "username": parts[2],
-                            "password": parts[3]
-                        }
-                    elif len(parts) == 2 and 'oxylabs' in proxy_str.lower():
-                        user = os.getenv('OXYLABS_USERNAME')
-                        pwd = os.getenv('OXYLABS_PASSWORD')
-                        if user and pwd:
-                            proxy_config = {
-                                "server": f"http://{proxy_str}",
-                                "username": user,
-                                "password": pwd
-                            }
-                
+                # No proxy for now (they're blocked by Cloudflare)
                 browser = await p.chromium.launch(
                     headless=True,
-                    proxy=proxy_config,
                     args=[
                         "--no-sandbox",
                         "--disable-blink-features=AutomationControlled",
@@ -270,78 +330,124 @@ class GodTierVaticanMonitorV2:
                 context = await browser.new_context(
                     locale="it-IT",
                     timezone_id="Europe/Rome",
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
                 
                 page = await context.new_page()
                 
-                await context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.chrome = { runtime: {} };
-                """)
-                
-                # Build deep link
-                from zoneinfo import ZoneInfo
-                from datetime import datetime as dt
-                
-                if "/" in target_date:
-                    day, month, year = target_date.split('/')
-                    dt_obj = dt(int(year), int(month), int(day))
-                else:
-                    dt_obj = dt.strptime(target_date, "%Y-%m-%d")
-                
-                rome = ZoneInfo("Europe/Rome")
-                midnight = dt_obj.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=rome)
-                ts = int(midnight.timestamp() * 1000)
-                
-                # Use correct slug based on ticket type
-                slug = "MV-Biglietti" if ticket_type == 0 else "MV-Visite-Guidate"
-                visitors = 3 if ticket_type == 0 else 2
-                deep_url = f"https://tickets.museivaticani.va/home/fromtag/{visitors}/{ts}/{slug}/1"
-                
-                logger.info(f"🔗 Navigating to: {deep_url}")
+                # Navigate to the page
                 await page.goto(deep_url, timeout=45000, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
+                
+                # Wait for ticket buttons to appear
+                try:
+                    await page.wait_for_selector('[data-cy^="bookTicket_"]', state="visible", timeout=10000)
+                except:
+                    logger.warning("⚠️ Timeout waiting for ticket buttons")
                 
                 # Extract cookies
                 cookies = await context.cookies()
                 
-                # Extract ticket IDs
-                ids_js = """
-                () => {
+                # Extract ticket IDs using improved JavaScript with better DOM traversal
+                ids = await page.evaluate('''() => {
                     const results = [];
-                    const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
-                    buttons.forEach(btn => {
-                        const id = btn.getAttribute("data-cy").split("_")[1];
-                        let name = "Unknown";
-                        let currentEl = btn;
-                        for (let i = 0; i < 5; i++) {
-                            currentEl = currentEl.parentElement;
-                            if (!currentEl) break;
-                            const exactTitle = currentEl.querySelector('.muvaTicketTitle');
-                            if (exactTitle) {
-                                name = exactTitle.innerText.trim();
-                                break;
-                            }
-                            const genericTitle = currentEl.querySelector('h1, h2, h3, h4');
-                            if (genericTitle) {
-                                name = genericTitle.innerText.trim();
-                                break;
+                    
+                    // Step 1: Get all ticket titles
+                    const titles = [];
+                    document.querySelectorAll('.muvaTicketTitle').forEach(el => {
+                        titles.push({
+                            text: el.textContent.trim(),
+                            element: el
+                        });
+                    });
+                    
+                    // Step 2: Get all buttons with IDs
+                    const buttons = [];
+                    document.querySelectorAll('[data-cy^="bookTicket_"]').forEach(btn => {
+                        const dataCy = btn.getAttribute('data-cy');
+                        if (dataCy) {
+                            const id = dataCy.replace('bookTicket_', '');
+                            buttons.push({
+                                id: id,
+                                element: btn
+                            });
+                        }
+                    });
+                    
+                    // Step 3: Try to match titles with buttons
+                    titles.forEach(titleInfo => {
+                        const titleEl = titleInfo.element;
+                        let matchedButton = null;
+                        
+                        // Try to find button in same container
+                        let container = titleEl.closest('app-ticket-card') || 
+                                       titleEl.closest('.card') || 
+                                       titleEl.closest('.ticket-container') ||
+                                       titleEl.closest('[class*="ticket"]') ||
+                                       titleEl.closest('div[class*="muva"]');
+                        
+                        if (container) {
+                            const btn = container.querySelector('[data-cy^="bookTicket_"]');
+                            if (btn) {
+                                const dataCy = btn.getAttribute('data-cy');
+                                matchedButton = dataCy ? dataCy.replace('bookTicket_', '') : null;
                             }
                         }
-                        results.push({id: id, name: name});
+                        
+                        if (matchedButton) {
+                            results.push({
+                                id: matchedButton,
+                                name: titleInfo.text
+                            });
+                        }
                     });
+                    
+                    // Step 4: For unmatched buttons, search up parent tree (up to 10 levels)
+                    buttons.forEach(btnInfo => {
+                        const alreadyMatched = results.some(r => r.id === btnInfo.id);
+                        if (alreadyMatched) return;
+                        
+                        const btn = btnInfo.element;
+                        let name = 'Vatican Ticket';
+                        
+                        // Search up to 10 parent levels (increased from 5)
+                        let parent = btn.parentElement;
+                        for (let i = 0; i < 10 && parent; i++) {
+                            const titleEl = parent.querySelector('.muvaTicketTitle, h1, h2, h3, h4, .card-title, [class*="title"], [class*="Title"]');
+                            if (titleEl && titleEl.textContent && titleEl.textContent.trim()) {
+                                name = titleEl.textContent.trim();
+                                break;
+                            }
+                            parent = parent.parentElement;
+                        }
+                        
+                        results.push({
+                            id: btnInfo.id,
+                            name: name
+                        });
+                    });
+                    
                     return results;
-                }
-                """
-                ids = await page.evaluate(ids_js)
+                }''')
                 
                 await browser.close()
                 
-                if ids:
-                    ids_cache = {target_date: ids}
+                if ids and len(ids) > 0:
+                    # Remove duplicates
+                    unique_ids = list({v['id']: v for v in ids}.values())
+                    
+                    # Store IDs with visitor count in key
+                    ids_cache = {
+                        f"{target_date}_v{eff_visitors}": unique_ids,
+                        f"__ALL___v{eff_visitors}": unique_ids
+                    }
                     self._save_session(cookies, ids_cache)
-                    logger.info(f"✅ Session refreshed! Got {len(ids)} ticket IDs")
+                    logger.info(f"✅ Session refreshed! Got {len(unique_ids)} DYNAMIC ticket IDs for {eff_visitors} visitor(s)")
+                    
+                    # Log the IDs for verification
+                    for idx, item in enumerate(unique_ids[:3], 1):
+                        logger.info(f"   {idx}. {item['name']} (ID: {item['id']})")
+                    
                     return True
                 else:
                     logger.error("❌ No ticket IDs found during refresh")
@@ -349,13 +455,16 @@ class GodTierVaticanMonitorV2:
                     
         except Exception as e:
             logger.error(f"❌ Browser refresh failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     async def check_availability(
         self, 
         date_str: str, 
         ticket_type: int = 0,
-        languages: List[str] = None
+        languages: List[str] = None,
+        visitors: int = None
     ) -> List[Dict]:
         """
         Check ticket availability using HTTP API.
@@ -366,21 +475,41 @@ class GodTierVaticanMonitorV2:
         # Step 1: Validate session against actual API
         if not await self.validate_api_session():
             logger.info("🔄 API session invalid, refreshing with browser...")
-            if not await self.refresh_session_with_browser(ticket_type, date_str):
+            if not await self.refresh_session_with_browser(ticket_type, date_str, visitors=visitors):
                 logger.error("❌ Failed to refresh session")
                 return results
         
-        # Step 2: Get cached IDs
-        cached_ids = self.session_cache.get("ids_cache", {}).get(date_str, [])
+        # ✅ FIX: Determine effective visitor count first (needed for cache key)
+        try:
+            env_visitors = int(os.getenv("VATICAN_VISITORS", "").strip())
+        except Exception:
+            env_visitors = 0
+        eff_visitors = visitors if (isinstance(visitors, int) and visitors > 0) else (env_visitors if env_visitors > 0 else 2)
+        
+        # Step 2: Get cached IDs (with visitor count in key)
+        ids_cache = self.session_cache.get("ids_cache", {})
+        cache_key = f"{date_str}_v{eff_visitors}"
+        fallback_key = f"__ALL___v{eff_visitors}"
+        
+        cached_ids = ids_cache.get(cache_key, [])
         if not cached_ids:
-            logger.info(f"🔍 No cached IDs for {date_str}, harvesting...")
-            if not await self.refresh_session_with_browser(ticket_type, date_str):
+            logger.info(f"🔍 No cached IDs for {date_str} with {eff_visitors} visitor(s), harvesting...")
+            if not await self.refresh_session_with_browser(ticket_type, date_str, visitors=eff_visitors):
                 return results
-            cached_ids = self.session_cache.get("ids_cache", {}).get(date_str, [])
+            ids_cache = self.session_cache.get("ids_cache", {})
+            cached_ids = ids_cache.get(cache_key, [])
+        
+        # Fallback: reuse last harvested IDs for this visitor count if date-specific cache is empty
+        if not cached_ids:
+            cached_ids = ids_cache.get(fallback_key, [])
+            if cached_ids:
+                logger.info(f"♻️ Reusing {len(cached_ids)} cached IDs from previous session ({eff_visitors} visitors)")
         
         if not cached_ids:
             logger.error("❌ No ticket IDs available")
             return results
+        
+        logger.info(f"🧾 Using {len(cached_ids)} ticket IDs for checks")
         
         # Format date for API
         if "-" in date_str:
@@ -412,7 +541,10 @@ class GodTierVaticanMonitorV2:
             session.headers.update({
                 "Referer": "https://tickets.museivaticani.va/",
                 "Accept": "application/json, text/plain, */*",
-                "X-Requested-With": "XMLHttpRequest"
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive"
             })
             
             check_tasks = []
@@ -422,23 +554,19 @@ class GodTierVaticanMonitorV2:
                 t_id = item['id']
                 t_name = item['name']
                 
-                # Filter by ticket type
-                is_guided = "Guidat" in t_name or "Guided" in t_name
-                if ticket_type == 0 and is_guided:
-                    continue
-                if ticket_type == 1 and not is_guided:
-                    continue
+                # Do not drop IDs based on name heuristics; guided pages often yield 'Unknown'
+                # Apply language parameter purely based on requested ticket_type
                 
-                visitors = 3 if ticket_type == 0 else 2
+                # Use the eff_visitors already determined above
                 
                 for lang_code in languages:
                     api_lang = lang_map.get(lang_code, "en")
-                    visit_lang_param = f"&visitLang={lang_code}" if is_guided else ""
+                    visit_lang_param = f"&visitLang={lang_code}" if ticket_type == 1 else ""
                     
                     url = (
                         f"https://tickets.museivaticani.va/api/visit/timeavail"
                         f"?lang={api_lang}{visit_lang_param}"
-                        f"&visitTypeId={t_id}&visitorNum={visitors}&visitDate={api_date}"
+                        f"&visitTypeId={t_id}&visitorNum={eff_visitors}&visitDate={api_date}"
                     )
                     
                     check_tasks.append(self._rate_limited_request(session, url))
@@ -452,6 +580,17 @@ class GodTierVaticanMonitorV2:
             logger.info(f"🔍 Checking {len(check_tasks)} ticket/language combinations...")
             responses = await asyncio.gather(*check_tasks, return_exceptions=True)
             
+            # Implementation of self-healing retry for 500 errors
+            has_500 = any(isinstance(r, dict) and r.get('status') == 500 for r in responses)
+            if has_500:
+                logger.warning("⚠️ Detected 500 errors in response. Forcing session refresh...")
+                if await self.refresh_session_with_browser(ticket_type, date_str, visitors=visitors):
+                    # Update cookie_dict and recreate session for retry
+                    cookie_dict = {c['name']: c['value'] for c in self.session_cache['cookies']}
+                    session.cookies.update(cookie_dict)
+                    # Re-run the tasks
+                    responses = await asyncio.gather(*check_tasks, return_exceptions=True)
+            
             # Process results
             for i, resp_data in enumerate(responses):
                 if isinstance(resp_data, Exception):
@@ -460,13 +599,20 @@ class GodTierVaticanMonitorV2:
                 if resp_data is None:
                     continue
                 
+                if not isinstance(resp_data, dict):
+                    # logger.debug(f"⚠️ Unexpected resp_data type: {type(resp_data)}")
+                    continue
+                
                 meta = check_meta[i]
                 timetable = resp_data.get("timetable", [])
+                
+                # If timetable is empty but status was 200, it might be truly sold out
+                # or the response structure changed.
                 
                 available_slots = [
                     {"time": t['time'], "availability": t['availability']}
                     for t in timetable
-                    if t.get('availability') != 'SOLD_OUT'
+                    if t.get('availability') not in ['SOLD_OUT', 'NOT_ALLOWED']
                 ]
                 
                 if available_slots:

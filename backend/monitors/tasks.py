@@ -176,7 +176,7 @@ def refresh_vatican_session():
 
 # ✅ NEW: SMART VATICAN MONITOR (Multi-Agency Optimized)
 @shared_task(name="run_smart_vatican_monitor", queue="vatican")
-def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
+def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors=2):
     """
     ULTRA-OPTIMIZED: Checks ONE specific (date, ticket_id, language) combo
     and notifies ALL agencies (task_ids) interested in it.
@@ -210,7 +210,7 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
                         page,
                         ticket_type=ticket_type,
                         target_date=date,
-                        visitors=2
+                        visitors=visitors
                     )
                     
                     # 💡 DYNAMIC RESOLUTION LOGIC
@@ -221,21 +221,80 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
                     
                     logger.info(f"🔎 Resolving fresh ID for name '{ticket_name}' among {len(resolved_ids)} candidates...")
                     
+                    # ✅ IMPROVED: Multi-strategy matching
+                    # Strategy 1: Exact substring match
                     for item in resolved_ids:
-                        # item = {'id': '...', 'name': '...', 'description': '...'}
                         r_name = item.get('name', '').lower()
                         t_name = ticket_name.lower()
                         
-                        # 1. Exact contains?
                         if t_name in r_name or r_name in t_name:
-                            # Prefer "Admission" loop avoidance if standard
                             if ticket_type == 0 and "lunch" in r_name: continue
                             exact_match = item['id']
+                            logger.info(f"✅ Exact Match: '{ticket_name}' -> ID {exact_match}")
                             break
+                    
+                    # Strategy 2: Keyword matching (if no exact match)
+                    if not exact_match:
+                        # Extract key terms from ticket name
+                        keywords = []
+                        t_lower = ticket_name.lower()
+                        
+                        # CRITICAL: Be specific about Musei Vaticani vs Palazzo Papale
+                        if 'musei' in t_lower:
+                            keywords.extend(['musei', 'vaticani', 'aree', 'museali'])  # ✅ Added 'aree museali'
+                            # Explicitly exclude Palazzo Papale
+                        elif 'palazzo' in t_lower:
+                            keywords.extend(['palazzo', 'papale'])
+                        elif 'specola' in t_lower:
+                            keywords.extend(['specola', 'vaticana'])
+                        
+                        if 'biglietti' in t_lower or 'admission' in t_lower or 'ingresso' in t_lower:
+                            keywords.extend(['biglietti', 'ingresso'])
+                        if 'visita' in t_lower or 'guided' in t_lower or 'tour' in t_lower:
+                            keywords.extend(['visita', 'guidata'])
+                        
+                        # Try to find ticket with most keyword matches
+                        best_match = None
+                        best_score = 0
+                        
+                        for item in resolved_ids:
+                            r_name = item.get('name', '').lower()
+                            score = sum(1 for kw in keywords if kw in r_name)
                             
+                            # CRITICAL: If looking for Musei Vaticani, reject Palazzo Papale
+                            if 'musei' in t_lower and 'palazzo' in r_name:
+                                continue
+                            # If looking for Palazzo Papale, reject Musei Vaticani
+                            if 'palazzo' in t_lower and 'musei' in r_name:
+                                continue
+                            
+                            # Avoid lunch/special tickets for standard admission
+                            if ticket_type == 0 and any(x in r_name for x in ['lunch', 'pranzo', 'pellegrinaggi']):
+                                continue
+                            
+                            if score > best_score:
+                                best_score = score
+                                best_match = item['id']
+                        
+                        if best_match and best_score >= 2:
+                            exact_match = best_match
+                            logger.info(f"✅ Keyword Match: '{ticket_name}' -> ID {exact_match} (score: {best_score})")
+                    
+                    # Strategy 3: Use first standard ticket as fallback
+                    if not exact_match and ticket_type == 0:
+                        for item in resolved_ids:
+                            r_name = item.get('name', '').lower()
+                            # Look for standard admission tickets
+                            # ✅ IMPROVED: Also check for "aree museali" and "ingresso" patterns
+                            if any(x in r_name for x in ['biglietti', 'ingresso', 'aree museali', 'museali']):
+                                # Exclude special tickets
+                                if not any(x in r_name for x in ['lunch', 'pranzo', 'pellegrinaggi', 'gruppi', 'palazzo', 'specola']):
+                                    exact_match = item['id']
+                                    logger.info(f"✅ Fallback Match: Using first standard ticket -> ID {exact_match}")
+                                    break
+                    
                     if exact_match:
                         fresh_id = exact_match
-                        logger.info(f"✅ Dynamic Match: '{ticket_name}' -> ID {fresh_id}")
                     else:
                         # LOG THE CANDIDATES for debugging
                         candidate_names = [i.get('name', '') for i in resolved_ids]
@@ -252,7 +311,9 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
                         page,
                         ticket_id=fresh_id,
                         ticket_name=ticket_name,
-                        ticket_index=ticket_index
+                        ticket_index=ticket_index,
+                        visit_date=date,
+                        visitors=visitors
                     )
                     
                     slots = result.get('slots', [])
@@ -327,6 +388,22 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
                 error_message=check_result.get('error')
             )
             
+            # ✅ Save slots to last_result_summary for Telegram display
+            try:
+                summary_data = {
+                    "updates": {
+                        date: [{
+                            'id': ticket_id,
+                            'name': ticket_name,
+                            'slots': slots
+                        }]
+                    },
+                    "last_updated": str(timezone.now())
+                }
+                task.last_result_summary = json.dumps(summary_data)
+            except Exception as e:
+                logger.error(f"Failed to save result summary: {e}")
+            
             task.save()
             
             # ✅ SMART NOTIFICATION: Only alert on state CHANGE (closed → open)
@@ -360,19 +437,18 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
                 try:
                     chat_id = task.agency.telegram_chat_id
                     if chat_id:
-                        lang_info = f" ({detected_lang or language})" if (detected_lang or language) else ""
-                        message = f"🚨 *TICKETS JUST OPENED!*\n\n"
-                        message += f"📅 Date: {date}\n"
-                        message += f"🎫 Ticket: {ticket_name}{lang_info}\n\n"
-                        message += f"⏰ Available Times ({len(slots)} slots):\n"
+                        from .notification_utils import format_vatican_notification
                         
-                        for slot in slots[:10]:  # First 10 slots
-                            message += f"  • {slot}\n"
-                        
-                        if len(slots) > 10:
-                            message += f"  ... and {len(slots) - 10} more\n"
-                        
-                        message += f"\n🔗 Book now!"
+                        message = format_vatican_notification(
+                            date=date,
+                            ticket_name=ticket_name,
+                            ticket_id=str(ticket_id),
+                            slots=slots,
+                            preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
+                            language=detected_lang or language,
+                            visitors=task.visitors,
+                            check_method="smart"
+                        )
                         
                         send_telegram_signal(chat_id, message)
                         logger.info(f"✅ TELEGRAM ALERT sent to {task.agency.name}")
@@ -391,7 +467,7 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids):
 
 # ✅ NEW: GOD-TIER HEADLESS MONITOR (Ultra-Fast HTTP Mode)
 @shared_task(name="run_god_tier_vatican_monitor", queue="vatican")
-def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, use_browser_fallback=True):
+def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors=2, use_browser_fallback=True):
     """
     🚀 ULTRA-FAST: Uses headless HTTP mode (curl_cffi) for 10x speed improvement.
     Only falls back to browser if session is invalid and refresh fails.
@@ -420,7 +496,8 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
             return await monitor.check_availability_headless(
                 date_str=date,
                 ticket_type=ticket_type,
-                languages=languages
+                languages=languages,
+                visitors=visitors
             )
         
         results = asyncio.run(headless_check())
@@ -435,7 +512,7 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
         if not matching_results and use_browser_fallback:
             logger.warning(f"⚠️ Headless check returned no results, falling back to browser mode")
             # Delegate to the existing smart monitor which uses HydraBot
-            return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids)
+            return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
         
         # Extract slots from results
         all_slots = []
@@ -492,6 +569,22 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
                 }
             )
             
+            # ✅ Save slots to last_result_summary for Telegram display
+            try:
+                summary_data = {
+                    "updates": {
+                        date: [{
+                            'id': ticket_id,
+                            'name': ticket_name,
+                            'slots': unique_slots
+                        }]
+                    },
+                    "last_updated": str(timezone.now())
+                }
+                task.last_result_summary = json.dumps(summary_data)
+            except Exception as e:
+                logger.error(f"Failed to save result summary: {e}")
+            
             task.save()
             
             # ✅ IMPROVED: Smart notification logic with proper cooldown handling
@@ -520,21 +613,18 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
                 try:
                     chat_id = task.agency.telegram_chat_id
                     if chat_id:
-                        lang_info = f" ({language})" if language else ""
-                        message = f"🚨 *TICKETS JUST OPENED!*\n\n"
-                        message += f"📅 Date: {date}\n"
-                        message += f"🎫 Ticket: {ticket_name}{lang_info}\n"
-                        message += f"⚡ Check Method: Ultra-Fast Headless\n\n"
-                        message += f"⏰ Available Times ({len(unique_slots)} slots):\n"
+                        from .notification_utils import format_vatican_notification
                         
-                        for slot in unique_slots[:10]:
-                            time_str = slot.get('time', slot) if isinstance(slot, dict) else slot
-                            message += f"  • {time_str}\n"
-                        
-                        if len(unique_slots) > 10:
-                            message += f"  ... and {len(unique_slots) - 10} more\n"
-                        
-                        message += f"\n🔗 Book now!"
+                        message = format_vatican_notification(
+                            date=date,
+                            ticket_name=ticket_name,
+                            ticket_id=str(ticket_id),
+                            slots=unique_slots,
+                            preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
+                            language=language,
+                            visitors=task.visitors,
+                            check_method="god-tier"
+                        )
                         
                         send_telegram_signal(chat_id, message)
                         logger.info(f"✅ TELEGRAM ALERT sent to {task.agency.name}")
@@ -577,7 +667,8 @@ def run_shared_vatican_monitor(ticket_type, language, dates):
         logger.info(f"🐉 HYDRA SHARED: Checking {len(dates)} dates (Type: {ticket_type}, Lang: {language}, Pattern: {name_pattern})")
         
         # Determine language for bot
-        bot_lang = language if ticket_type == 1 else "ENG" 
+        # Standard tickets (type 0) should have None, guided tours (type 1) use specified language
+        bot_lang = language if ticket_type == 1 else None 
         
         import asyncio
         # Pass name_pattern to bot
@@ -902,10 +993,170 @@ def run_colosseum_monitor(task_id):
             pass
         return str(e)
 
+@shared_task(name="resolve_and_check_task", queue="vatican")
+def resolve_and_check_task(task_id):
+    """
+    ✅ REQUIRED: Resolves ticket_id for a task that doesn't have one, then checks it.
+    
+    This function is MANDATORY for tasks without ticket_id.
+    Tasks will NOT be checked until they have a valid ticket_id.
+    
+    Flow:
+    1. Check if task already has ticket_id → if yes, just check it
+    2. If no ticket_id → resolve from Vatican website (REQUIRED)
+    3. Save ticket_id to database
+    4. Check the task using the resolved ID
+    """
+    try:
+        # ✅ Clear the queue lock at the start
+        queue_key = f"resolving:{task_id}"
+        cache.delete(queue_key)
+        
+        task = MonitorTask.objects.get(id=task_id)
+        
+        if task.ticket_id:
+            # Already has ID, just check it
+            logger.info(f"✅ Task #{task_id} already has ticket_id, checking directly")
+            return run_god_tier_vatican_monitor(
+                date=task.dates[0],
+                ticket_id=task.ticket_id,
+                ticket_name=task.ticket_name,
+                language=task.language,
+                task_ids=[task_id],
+                visitors=task.visitors
+            )
+        
+        logger.info(f"🔍 RESOLVING ticket_id for Task #{task_id}: {task.ticket_name} (REQUIRED)")
+        
+        # Use HydraBot to resolve fresh ID
+        from worker_vatican.hydra_monitor import HydraBot
+        import asyncio
+        
+        async def resolve_id():
+            bot = HydraBot(use_proxies=True)
+            async with bot.get_browser() as browser:
+                page = await browser.new_page()
+                
+                # Convert date format if needed
+                date = task.dates[0]
+                if '-' in date:
+                    year, month, day = date.split('-')
+                    date_formatted = f"{day}/{month}/{year}"
+                else:
+                    date_formatted = date
+                
+                # Resolve all IDs
+                resolved_ids = await bot.resolve_all_dynamic_ids(
+                    page,
+                    ticket_type=task.ticket_type,
+                    target_date=date_formatted,
+                    visitors=task.visitors
+                )
+                
+                await page.close()
+                
+                # Match by name (same logic as in tasks.py)
+                ticket_name = task.ticket_name
+                
+                # Strategy 1: Exact match
+                for item in resolved_ids:
+                    r_name = item.get('name', '').lower()
+                    t_name = ticket_name.lower()
+                    
+                    if t_name in r_name or r_name in t_name:
+                        if task.ticket_type == 0 and "lunch" in r_name:
+                            continue
+                        return item['id']
+                
+                # Strategy 2: Keyword match
+                keywords = []
+                t_lower = ticket_name.lower()
+                
+                if 'musei' in t_lower:
+                    keywords.extend(['musei', 'vaticani', 'aree', 'museali'])  # ✅ FIXED: Added 'aree', 'museali'
+                elif 'palazzo' in t_lower:
+                    keywords.extend(['palazzo', 'papale'])
+                elif 'specola' in t_lower:
+                    keywords.extend(['specola', 'vaticana'])
+                
+                if 'biglietti' in t_lower or 'admission' in t_lower or 'ingresso' in t_lower:
+                    keywords.extend(['biglietti', 'ingresso'])
+                if 'visita' in t_lower or 'guided' in t_lower or 'tour' in t_lower:
+                    keywords.extend(['visita', 'guidata'])
+                
+                best_match = None
+                best_score = 0
+                
+                for item in resolved_ids:
+                    r_name = item.get('name', '').lower()
+                    score = sum(1 for kw in keywords if kw in r_name)
+                    
+                    # CRITICAL: Venue exclusions
+                    if 'musei' in t_lower and 'palazzo' in r_name:
+                        continue
+                    if 'palazzo' in t_lower and 'musei' in r_name:
+                        continue
+                    
+                    if task.ticket_type == 0 and any(x in r_name for x in ['lunch', 'pranzo', 'pellegrinaggi']):
+                        continue
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_match = item['id']
+                
+                if best_match and best_score >= 2:
+                    return best_match
+                
+                # Strategy 3: Fallback to first standard ticket
+                if task.ticket_type == 0:
+                    for item in resolved_ids:
+                        r_name = item.get('name', '').lower()
+                        # ✅ IMPROVED: Also check for "aree museali" and "ingresso" patterns
+                        if any(x in r_name for x in ['biglietti', 'ingresso', 'aree museali', 'museali']):
+                            # ✅ CRITICAL: Exclude wrong venues
+                            if not any(x in r_name for x in ['lunch', 'pranzo', 'pellegrinaggi', 'gruppi', 'palazzo', 'specola']):
+                                return item['id']
+                
+                return None
+        
+        # Run resolution
+        fresh_id = asyncio.run(resolve_id())
+        
+        if fresh_id:
+            # Update task with fresh ID
+            task.ticket_id = fresh_id
+            task.save(update_fields=['ticket_id'])
+            logger.info(f"✅ Resolved and saved ticket_id {fresh_id} for Task #{task_id}")
+            
+            # Now check the task using the smart path
+            return run_god_tier_vatican_monitor(
+                date=task.dates[0],
+                ticket_id=fresh_id,
+                ticket_name=task.ticket_name,
+                language=task.language,
+                task_ids=[task_id],
+                visitors=task.visitors
+            )
+        else:
+            logger.error(f"❌ CRITICAL: Could not resolve ticket_id for Task #{task_id}")
+            logger.error(f"   Task will NOT be checked until ticket_id is resolved")
+            logger.error(f"   Ticket: {task.ticket_name}, Date: {task.dates[0] if task.dates else 'N/A'}")
+            task.last_status = 'error'
+            task.last_result_summary = 'CRITICAL: Could not resolve ticket ID - task cannot be checked'
+            task.save()
+            return f"FAILED: Could not resolve ticket_id for task {task_id} - TASK WILL NOT BE CHECKED"
+            
+    except Exception as e:
+        logger.error(f"Error in resolve_and_check_task: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"Failed: {str(e)}"
+
+
 @shared_task(name="orchestrate_all_tasks")
 def orchestrate_all_tasks():
     """
-    ✅ ULTRA-OPTIMIZED: Groups tasks by (date, ticket_id, language) for maximum efficiency.
+    ✅ ULTRA-OPTIMIZED: Groups tasks by (date, ticket_id, language, visitors) for maximum efficiency.
     
     Example: If 5 agencies want the same ticket/date/language, we check ONCE and notify all 5.
     """
@@ -913,11 +1164,11 @@ def orchestrate_all_tasks():
     active_tasks = MonitorTask.objects.filter(is_active=True)
     
     # ✅ NEW GROUPING STRUCTURE
-    # Key: (date, ticket_id, language) → List of task IDs
+    # Key: (date, ticket_id, language, visitors) → List of task IDs
     smart_groups = {}
     
-    # OLD GROUPING (for backwards compat with tasks that don't have ticket_id)
-    legacy_groups = {}
+    # Tasks that need immediate ID resolution (blocking)
+    tasks_needing_id = []
     
     colosseum_count = 0
     
@@ -937,36 +1188,57 @@ def orchestrate_all_tasks():
                 
         if should_run:
             if task.site == 'vatican' and task.dates:
-                # ✅ NEW: Use smart grouping if ticket_id is specified
-                if task.ticket_id:
+                # ✅ CRITICAL: ALWAYS require ticket_id - resolve if missing
+                if not task.ticket_id:
+                    logger.warning(f"⚠️ Task #{task.id} has no ticket_id - will resolve immediately")
+                    tasks_needing_id.append(task)
+                else:
+                    # Has ticket_id - add to smart groups
                     for date in task.dates:
                         # Format: DD/MM/YYYY
-                        # Group by EXACT combo
-                        key = (date, task.ticket_id, task.language or None)
+                        # Group by EXACT combo including visitors
+                        key = (date, task.ticket_id, task.language or None, task.visitors)
                         
                         if key not in smart_groups:
                             smart_groups[key] = {
                                 'task_ids': [],
-                                'ticket_name': task.ticket_name or 'Unknown Ticket'
+                                'ticket_name': task.ticket_name or 'Unknown Ticket',
+                                'visitors': task.visitors
                             }
                         
                         smart_groups[key]['task_ids'].append(task.id)
-                else:
-                    # LEGACY: Old behavior for tasks without ticket_id
-                    key = (task.ticket_type, task.language or 'ENG')
-                    if key not in legacy_groups:
-                        legacy_groups[key] = set()
-                    for d in task.dates:
-                        legacy_groups[key].add(d)
                         
             elif task.site == 'colosseum':
                 # Keep existing per-task logic for Colosseum (It is lightweight API)
                 run_colosseum_monitor.apply_async(args=[task.id], countdown=random.randint(5, 30))
                 colosseum_count += 1
+    
+    # ✅ RESOLVE IDs FOR TASKS WITHOUT ticket_id (REQUIRED - NO SKIPPING)
+    # These tasks MUST get a ticket_id before they can be checked
+    if tasks_needing_id:
+        logger.info(f"🔍 {len(tasks_needing_id)} tasks REQUIRE ticket_id resolution")
+        for task in tasks_needing_id:
+            # ✅ SPAM PREVENTION: Check if already queued (using Redis cache)
+            queue_key = f"resolving:{task.id}"
+            if cache.get(queue_key):
+                logger.info(f"   Task #{task.id} already queued for resolution - skipping")
+                continue
+            
+            # Mark as queued (expires in 5 minutes)
+            cache.set(queue_key, "queued", timeout=300)
+            
+            # Queue a task to resolve ID and then check
+            # This is REQUIRED - task won't be checked until ID is resolved
+            resolve_and_check_task.apply_async(
+                args=[task.id],
+                queue='vatican',  # ✅ FIXED: Explicitly specify queue
+                countdown=random.randint(5, 30)
+            )
+            logger.info(f"   Task #{task.id} ({task.dates[0] if task.dates else 'N/A'}) - queued for ID resolution")
                 
     # ✅ DISPATCH SMART TASKS (New optimized method)
     smart_count = 0
-    for (date, ticket_id, language), data in smart_groups.items():
+    for (date, ticket_id, language, visitors), data in smart_groups.items():
         task_ids = data['task_ids']
         ticket_name = data['ticket_name']
         
@@ -977,53 +1249,31 @@ def orchestrate_all_tasks():
         if VATICAN_MONITOR_MODE == 'headless':
             # Ultra-fast headless mode only (no fallback)
             run_god_tier_vatican_monitor.apply_async(
-                args=[date, ticket_id, ticket_name, language, task_ids],
+                args=[date, ticket_id, ticket_name, language, task_ids, visitors],
                 kwargs={'use_browser_fallback': False},
                 countdown=jitter
             )
         elif VATICAN_MONITOR_MODE == 'browser':
             # Legacy browser mode
             run_smart_vatican_monitor.apply_async(
-                args=[date, ticket_id, ticket_name, language, task_ids],
+                args=[date, ticket_id, ticket_name, language, task_ids, visitors],
                 countdown=jitter
             )
         else:  # 'hybrid' (default)
             # Try headless first, fallback to browser if needed
             run_god_tier_vatican_monitor.apply_async(
-                args=[date, ticket_id, ticket_name, language, task_ids],
+                args=[date, ticket_id, ticket_name, language, task_ids, visitors],
                 kwargs={'use_browser_fallback': True},
                 countdown=jitter
             )
         
         smart_count += 1
-        logger.info(f"📊 Smart Group: {date}/{ticket_id}/{language} → {len(task_ids)} agencies")
-    
-    # DISPATCH LEGACY TASKS (Backwards compatibility)
-    legacy_count = 0
-    for (t_type, lang), date_set in legacy_groups.items():
-        if not date_set:
-            continue
-        
-        # Chunk dates to avoid overload (max 10 dates per worker)
-        all_dates = list(date_set)
-        CHUNK_SIZE = 10
-        
-        for i in range(0, len(all_dates), CHUNK_SIZE):
-            chunk = all_dates[i:i + CHUNK_SIZE]
-            
-            # Jitter for anti-ban
-            jitter = random.randint(5, 30)
-            
-            run_shared_vatican_monitor.apply_async(
-                args=[t_type, lang, chunk],
-                countdown=jitter
-            )
-            legacy_count += len(chunk)
+        logger.info(f"📊 Smart Group: {date}/{ticket_id}/{language}/{visitors}v → {len(task_ids)} agencies")
 
-    total_checks = smart_count + legacy_count
-    logger.info(f"✅ Orchestration Complete: {smart_count} smart checks + {legacy_count} legacy checks + {colosseum_count} Colosseum")
+    total_checks = smart_count + len(tasks_needing_id)
+    logger.info(f"✅ Orchestration Complete: {smart_count} smart checks + {len(tasks_needing_id)} ID resolutions (REQUIRED) + {colosseum_count} Colosseum")
     
-    return f"Queued {smart_count} smart checks (multi-agency), {legacy_count} legacy checks, {colosseum_count} Colosseum tasks."
+    return f"Queued {smart_count} smart checks (multi-agency), {len(tasks_needing_id)} ID resolutions (REQUIRED), {colosseum_count} Colosseum tasks."
 @shared_task(name="cleanup_old_results")
 def cleanup_old_results():
     """
@@ -1041,15 +1291,24 @@ def cleanup_old_results():
 @shared_task(name="cleanup_expired_monitor_tasks")
 def cleanup_expired_monitor_tasks():
     """
-    Daily Cleanup: Removes dates from the past.
-    If a task has no future dates, it is deleted.
+    ✅ ENHANCED: Removes dates/times from the past.
+    - Removes past dates entirely
+    - For today's date, removes times that have already passed
+    - If a task has no future dates/times, it is deleted
     """
     from datetime import datetime
-    now_date = timezone.now().date()
+    from zoneinfo import ZoneInfo
+    
+    # Use Rome timezone for Vatican tasks
+    rome = ZoneInfo("Europe/Rome")
+    now = timezone.now().astimezone(rome)
+    now_date = now.date()
+    now_time = now.time()
     
     tasks = MonitorTask.objects.all()
     cleaned_count = 0
     deleted_count = 0
+    times_removed = 0
     
     for task in tasks:
         if not task.dates:
@@ -1067,14 +1326,51 @@ def cleanup_expired_monitor_tasks():
                 elif "-" in d_str:
                     dt = datetime.strptime(d_str, "%Y-%m-%d").date()
                 else:
-                    # Keep invalid formats just in case, or drop?
-                    # Let's drop them if we are strict, but maybe better to keep to avoid accidental deletion
-                    # Actually, if we can't parse it, we can't check if it's past.
-                    # Let's assume valid formats.
                     continue 
                 
-                if dt >= now_date:
+                # Future date - keep it
+                if dt > now_date:
                     new_dates.append(d_str)
+                # Today's date - check preferred times
+                elif dt == now_date:
+                    # If task has preferred times, filter out past times
+                    if task.preferred_times and len(task.preferred_times) > 0:
+                        future_times = []
+                        for time_str in task.preferred_times:
+                            try:
+                                # Parse time (format: "HH:MM" or "HH:MM:SS")
+                                time_parts = time_str.split(':')
+                                hour = int(time_parts[0])
+                                minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                                
+                                task_time = datetime.strptime(f"{hour:02d}:{minute:02d}", "%H:%M").time()
+                                
+                                # Keep times that haven't passed yet (add 30 min buffer)
+                                from datetime import timedelta as td
+                                buffer_time = (datetime.combine(now_date, now_time) - td(minutes=30)).time()
+                                
+                                if task_time > buffer_time:
+                                    future_times.append(time_str)
+                                else:
+                                    times_removed += 1
+                                    logger.info(f"⏰ Removed past time {time_str} from Task #{task.id}")
+                            except:
+                                # Keep invalid time formats
+                                future_times.append(time_str)
+                        
+                        # If there are still future times today, keep the date
+                        if future_times:
+                            task.preferred_times = future_times
+                            new_dates.append(d_str)
+                            changed = True
+                        else:
+                            # All times have passed, remove the date
+                            changed = True
+                            logger.info(f"📅 All times passed for today on Task #{task.id} - removing date")
+                    else:
+                        # No preferred times, keep today's date (might have slots later)
+                        new_dates.append(d_str)
+                # Past date - remove it
                 else:
                     changed = True
             except:
@@ -1082,12 +1378,69 @@ def cleanup_expired_monitor_tasks():
                 
         if changed:
             if not new_dates:
-                logger.info(f"🗑️ Task {task.id} has no future dates. Deleting.")
+                logger.info(f"🗑️ Task #{task.id} has no future dates/times. Deleting.")
                 task.delete()
                 deleted_count += 1
             else:
                 task.dates = new_dates
                 task.save()
                 cleaned_count += 1
+    
+    logger.info(f"🧹 Cleanup: Updated {cleaned_count} tasks, Deleted {deleted_count} tasks, Removed {times_removed} past times")
+    return f"Cleanup: Updated {cleaned_count} tasks, Deleted {deleted_count} tasks, Removed {times_removed} past times"
+
+
+@shared_task(name="cleanup_backed_up_queues")
+def cleanup_backed_up_queues():
+    """
+    ✅ NEW: Periodically checks and cleans backed-up Celery queues.
+    Runs every hour to prevent queue overflow.
+    
+    Monitors:
+    - vatican queue (should be < 100 tasks)
+    - colosseum queue (should be < 50 tasks)
+    - celery queue (should be < 200 tasks)
+    
+    If queue exceeds threshold, purges old tasks.
+    """
+    try:
+        from django.core.cache import cache
+        import redis
+        
+        # Connect to Redis
+        redis_url = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
+        r = redis.from_url(redis_url)
+        
+        # Define queue thresholds
+        queue_thresholds = {
+            'vatican': 100,
+            'colosseum': 50,
+            'celery': 200
+        }
+        
+        cleaned_queues = []
+        
+        for queue_name, threshold in queue_thresholds.items():
+            try:
+                queue_length = r.llen(queue_name)
                 
-    return f"Cleanup: Updated {cleaned_count} tasks, Deleted {deleted_count} tasks."
+                if queue_length > threshold:
+                    logger.warning(f"⚠️ Queue '{queue_name}' backed up: {queue_length} tasks (threshold: {threshold})")
+                    
+                    # Purge the queue
+                    r.delete(queue_name)
+                    logger.info(f"🧹 Purged queue '{queue_name}' - removed {queue_length} tasks")
+                    cleaned_queues.append(f"{queue_name}:{queue_length}")
+                else:
+                    logger.info(f"✅ Queue '{queue_name}' healthy: {queue_length} tasks")
+            except Exception as e:
+                logger.error(f"Error checking queue '{queue_name}': {e}")
+        
+        if cleaned_queues:
+            return f"Cleaned queues: {', '.join(cleaned_queues)}"
+        else:
+            return "All queues healthy"
+            
+    except Exception as e:
+        logger.error(f"Error in cleanup_backed_up_queues: {e}")
+        return f"Failed: {str(e)}"

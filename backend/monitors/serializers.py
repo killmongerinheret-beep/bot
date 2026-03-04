@@ -31,14 +31,42 @@ class CheckResultSerializer(serializers.ModelSerializer):
 class MonitorTaskSerializer(serializers.ModelSerializer):
     agency_name = serializers.ReadOnlyField(source='agency.name')
     latest_check = serializers.SerializerMethodField()
+    slots_found = serializers.SerializerMethodField()
+    target_date = serializers.SerializerMethodField()
     
     class Meta:
         model = MonitorTask
         fields = '__all__'
     
+    def get_target_date(self, obj):
+        """Get the first date from dates JSON field"""
+        if obj.dates and isinstance(obj.dates, list) and len(obj.dates) > 0:
+            return obj.dates[0]
+        return None
+    
+    def get_slots_found(self, obj):
+        """Get number of slots from latest check result"""
+        latest_result = obj.results.order_by('-check_time').first()
+        if latest_result and latest_result.details:
+            # Check if details has slots
+            if isinstance(latest_result.details, dict):
+                slots = latest_result.details.get('slots', [])
+                if isinstance(slots, list):
+                    return len(slots)
+            elif isinstance(latest_result.details, list):
+                return len(latest_result.details)
+        return 0
+    
     def get_latest_check(self, obj):
         """Get the most recent CheckResult with slots for this task."""
         latest_result = obj.results.order_by('-check_time').first()
         if latest_result:
-            return CheckResultSerializer(latest_result).data
+            return {
+                'id': latest_result.id,
+                'check_time': latest_result.check_time,
+                'status': latest_result.status,
+                'slots_found': self.get_slots_found(obj),
+                'details': latest_result.details,
+                'error_message': latest_result.error_message
+            }
         return None

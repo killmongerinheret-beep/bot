@@ -22,7 +22,7 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
         preferred_times: '',
         visitors: 2,
         notification_mode: 'any_change',
-        language: 'ENG'
+        language: ''  // Empty string, will be set based on ticket type
     });
     const [newDate, setNewDate] = useState('');
     const [loading, setLoading] = useState(false);
@@ -70,13 +70,23 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
         }
         setLoading(true);
         try {
+            // Determine ticket type based on area_name
+            const isGuidedTour = formData.area_name === 'MV-Tour' || selectedTicketId?.startsWith('guided_');
+            
+            // For standard tickets, language should be null/undefined
+            // For guided tours, use selectedLanguage or formData.language
+            let languageValue = null;
+            if (isGuidedTour) {
+                languageValue = selectedLanguage || formData.language || null;
+            }
+            
             const payload = {
                 ...formData,
                 agency: agencyId,
                 preferred_times: formData.preferred_times.split(',').map((t: string) => t.trim()).filter(Boolean),
                 ticket_id: selectedTicketId || undefined,
                 ticket_name: selectedTicketName || undefined,
-                language: selectedLanguage || formData.language,
+                language: languageValue || undefined,  // undefined will be omitted from JSON
             };
 
             await api.createTask(payload);

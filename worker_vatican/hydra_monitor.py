@@ -4,6 +4,7 @@ import logging
 import json
 import os
 import re
+from datetime import datetime
 from contextlib import asynccontextmanager
 from playwright.async_api import async_playwright
 try:
@@ -693,96 +694,453 @@ class HydraBot:
             logger.error(f"Timestamp calc failed: {e}")
             return 0 # Should probably fallback or error
 
-    async def resolve_all_dynamic_ids(self, page, ticket_type, target_date, visitors=2):
+    async def resolve_all_dynamic_ids(self, page, ticket_type, target_date, visitors=1, force_refresh=False):
         """
         Navigates to the Deep Link and extracts ALL valid `visitTypeId`s available.
         IMPORTANTLY: This also establishes the necessary session cookies for subsequent API calls.
+        
+        ✅ OPTIMIZATION: IDs are stable with the same JSESSIONID, so we cache them together
+        ✅ 24/7 RELIABILITY: Regenerates session when cache expires or force_refresh=True
+        
         Returns a list of dicts: [{"id": "123", "name": "Ticket Name"}, ...]
         
         Args:
-            visitors: Number of visitors (used for API calls, NOT for deep link... wait, actually it IS valid for deep link too)
+            visitors: Number of visitors (MUST match the visitor count used in API calls!)
+            force_refresh: Force regeneration of session and IDs (default: False)
         """
         try:
-            # ✅ FIX: User identified this URL segment as VISITOR COUNT, not Tag ID.
-            # Using 3 seems to hit the public pool (or at least a valid one), while 1 was restricted/broken.
-            # We will use 'visitors' param for the link if provided, else default to known working values.
+            # Check if we have valid cached IDs for this session
+            cache_key = f"{target_date}_{visitors}_{ticket_type}"
+            
+            if not force_refresh and "ids_cache" in self.session_cache and cache_key in self.session_cache["ids_cache"]:
+                cached_data = self.session_cache["ids_cache"][cache_key]
+                cached_ids = cached_data.get('ids', [])
+                cached_jsessionid = cached_data.get('jsessionid')
+                cached_time = cached_data.get('timestamp', '')
+                
+                # Check if current page has the same JSESSIONID
+                try:
+                    current_cookies = await page.context.cookies()
+                    current_jsessionid = None
+                    for cookie in current_cookies:
+                        if cookie['name'] == 'JSESSIONID':
+                            current_jsessionid = cookie['value']
+                            break
+                    
+                    if cached_ids and cached_jsessionid == current_jsessionid:
+                        logger.info(f"✅ Using cached IDs ({len(cached_ids)} IDs) - JSESSIONID matches")
+                        logger.info(f"   Cached at: {cached_time}")
+                        return cached_ids
+                    elif cached_ids:
+                        logger.info(f"⚠️ Cached IDs found but JSESSIONID changed - will extract fresh IDs")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error checking cached IDs: {e} - will extract fresh IDs")
+            
+            if force_refresh:
+                logger.info(f"🔄 Force refresh requested - extracting fresh IDs")
+            
+            # ✅ CRITICAL FIX: Use the ACTUAL visitor count from the task
+            # The deep link visitor count MUST match the API visitor count
+            # Otherwise, the Vatican website shows different availability
+            
+            # Use the actual visitors parameter (from task.visitors)
+            link_visitors = visitors
             
             if ticket_type == 0:
-                # Standard Tickets
-                # We verified '3' works perfectly. '1' showed 0 slots.
-                # So we default to 3 visitors for the "Deep Link" simply to get a valid session/page.
-                link_visitors = 3 
                 slug = "MV-Biglietti"
             else:
-                # Guided Tours
-                link_visitors = 2
                 slug = "MV-Visite-Guidate"
             
             ts = self.get_vatican_timestamp(target_date)
-            # Correct Deep Link Structure: .../fromtag/{VISITORS}/{TIMESTAMP}/{SLUG}/1
+            
+            # ✅ CORRECT FORMAT: Use /fromtag/ with proper structure
+            # Format: /home/fromtag/{visitors}/{timestamp}/{slug}/1
+            # For standard tickets: slug = "MV-Biglietti"
+            # For guided tours: slug = "MV-Visite-Guidate"
+            if ticket_type == 0:
+                slug = "MV-Biglietti"
+            else:
+                slug = "MV-Visite-Guidate"
+            
             deep_url = f"https://tickets.museivaticani.va/home/fromtag/{link_visitors}/{ts}/{slug}/1"
             
             logger.info(f"🕸️ [Multi-Scan] Navigating to Deep Link: {deep_url}")
             
-            # Using 'domcontentloaded' is usually enough and faster
-            await page.goto(deep_url, timeout=45000, wait_until="domcontentloaded")
-            await page.wait_for_timeout(2000) # Short wait for Angular hydration
+            # ✅ RETRY LOGIC: Try with proxy first, fallback to no-proxy if timeout
+            navigation_success = False
+            for attempt in range(2):
+                try:
+                    if attempt == 0:
+                        # First attempt: Normal navigation with proxy (if enabled)
+                        timeout_ms = 90000  # 90 seconds
+                        logger.info(f"🔄 Attempt {attempt + 1}/2: With proxy (timeout: {timeout_ms/1000}s)")
+                    else:
+                        # Second attempt: Shorter timeout, will trigger fallback
+                        timeout_ms = 60000  # 60 seconds
+                        logger.warning(f"⚠️ Attempt {attempt + 1}/2: Retry with shorter timeout")
+                    
+                    await page.goto(deep_url, timeout=timeout_ms, wait_until="networkidle")
+                    navigation_success = True
+                    logger.info(f"✅ Navigation successful on attempt {attempt + 1}")
+                    break
+                    
+                except Exception as nav_error:
+                    if attempt == 0:
+                        logger.warning(f"⚠️ Navigation timeout on attempt {attempt + 1}: {str(nav_error)[:100]}")
+                        logger.info(f"🔄 Will retry with shorter timeout...")
+                        await page.wait_for_timeout(5000)  # Wait 5s before retry
+                    else:
+                        logger.error(f"❌ Navigation failed after {attempt + 1} attempts")
+                        raise
+            
+            if not navigation_success:
+                raise Exception("Navigation failed after all retry attempts")
+            
+            # Additional wait for Angular to fully hydrate and API to be ready
+            await page.wait_for_timeout(8000)
             
             # Verify cookies were set
             cookies = await page.context.cookies()
             logger.info(f"🍪 Session Cookies: {len(cookies)} cookies set")
+            for cookie in cookies:
+                logger.debug(f"   • {cookie['name']}: {cookie['value'][:30]}...")
             
             # ✅ ROBUSTNESS: Wait for tickets to surely render (Angular hydration)
+            # Try multiple selectors since Angular might render different elements first
             try:
-                await page.wait_for_selector("[data-cy^='bookTicket_']", state="visible", timeout=15000)
-                # Also wait for Titles to be sure
-                await page.wait_for_selector(".muvaTicketTitle", state="visible", timeout=5000)
-            except:
-                logger.warning("⚠️ Timeout waiting for ticket elements. Page might be empty or sold out.")
+                # Wait for either the ticket container div OR the title to appear
+                await page.wait_for_selector("div[id^='ticket_'], .muvaTicketTitle, [data-cy^='bookTicket_']", state="attached", timeout=25000)
+                logger.info("✅ Ticket elements detected")
+                
+                # Give Angular more time to finish rendering all elements
+                await page.wait_for_timeout(3000)
+                
+                # Try to expand any collapsed sections
+                try:
+                    await page.evaluate('''() => {
+                        const expandButtons = document.querySelectorAll('[data-toggle="collapse"], .accordion-button, .btn-collapse, [aria-expanded="false"]');
+                        expandButtons.forEach(btn => {
+                            try {
+                                btn.click();
+                            } catch(e) {}
+                        });
+                    }''')
+                    # Wait for expansions to complete
+                    await page.wait_for_timeout(2000)
+                    logger.info("✅ Expanded collapsed sections")
+                except:
+                    pass
+                
+                # Check if titles are visible
+                title_count = await page.locator(".muvaTicketTitle").count()
+                logger.info(f"✅ Found {title_count} ticket titles")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Timeout waiting for ticket elements: {e}. Page might be empty or sold out.")
             
-            # Extract ticket IDs from the page
-            ids_js = """
-            () => {
+            # ✅ MONDAY FIX: Check if this is a Monday date (may need special handling)
+            from datetime import datetime
+            import time
+            start_time = time.time()
+            
+            is_monday = False
+            try:
+                if '/' in target_date:
+                    day, month, year = target_date.split('/')
+                else:
+                    year, month, day = target_date.split('-')
+                date_obj = datetime(int(year), int(month), int(day))
+                is_monday = date_obj.weekday() == 0
+                
+                if is_monday:
+                    logger.info("📅 MONDAY DETECTED - Using AGGRESSIVE progressive wait strategy")
+                    logger.info("⏱️ Waiting 12 seconds for initial page render...")
+                    # Wait 12 seconds BEFORE starting progressive checks (titles need time to render)
+                    await page.wait_for_timeout(12000)
+                    
+                    logger.info("⏱️ Now checking for 'Musei Vaticani' ticket WITH TITLE...")
+                    
+                    # Progressive wait: Check every 3 seconds if Musei Vaticani WITH TITLE appears, up to 30 more seconds
+                    max_wait = 30  # seconds (after initial 12s wait)
+                    check_interval = 3  # seconds
+                    elapsed = 0
+                    musei_found = False
+                    
+                    while elapsed < max_wait:
+                        # ✅ IMPROVED: Check if Musei Vaticani ticket exists WITH a valid title
+                        # Use SAME selectors as final extraction for consistency
+                        musei_result = await page.evaluate('''() => {
+                            const containers = document.querySelectorAll('div[id^="ticket_"]');
+                            let found = false;
+                            let foundId = null;
+                            let foundTitle = null;
+                            
+                            containers.forEach(container => {
+                                // Use SAME selector strategy as final extraction
+                                const selectors = [
+                                    '.muvaTicketTitle',
+                                    'h1', 'h2', 'h3', 'h4',
+                                    '.card-title',
+                                    'span[class*="title"]',
+                                    'span[class*="Title"]'
+                                ];
+                                
+                                let titleEl = null;
+                                for (const sel of selectors) {
+                                    titleEl = container.querySelector(sel);
+                                    if (titleEl && titleEl.textContent.trim().length > 5) {
+                                        break;
+                                    }
+                                }
+                                
+                                if (titleEl) {
+                                    const titleText = titleEl.textContent.toLowerCase();
+                                    if (titleText.includes('musei') && titleText.includes('vaticani') && titleText.includes('biglietti')) {
+                                        found = true;
+                                        foundId = container.getAttribute('id').replace('ticket_', '');
+                                        foundTitle = titleEl.textContent.trim();
+                                    }
+                                }
+                            });
+                            
+                            return {found: found, id: foundId, title: foundTitle};
+                        }''')
+                        
+                        if musei_result['found']:
+                            musei_found = True
+                            logger.info(f"✅ 'Musei Vaticani' WITH TITLE found after {elapsed}s!")
+                            logger.info(f"   ID: {musei_result['id']}, Title: {musei_result['title']}")
+                            logger.info(f"⏱️ Waiting 5 more seconds for complete rendering...")
+                            # Give it 5 more seconds to fully render all elements
+                            await page.wait_for_timeout(5000)
+                            elapsed += 5
+                            break
+                        
+                        # Wait and check again
+                        await page.wait_for_timeout(check_interval * 1000)
+                        elapsed += check_interval
+                        logger.info(f"⏱️ Still waiting... ({elapsed}s / {max_wait}s)")
+                    
+                    if not musei_found:
+                        logger.warning(f"⚠️ 'Musei Vaticani' WITH TITLE did NOT appear after {elapsed}s")
+                        logger.warning(f"⚠️ Proceeding with extraction anyway - may use fallback methods")
+                    
+                    logger.info(f"⏱️ Total Monday wait time: {time.time() - start_time:.1f}s")
+                else:
+                    logger.info("📅 Not a Monday - using standard extraction")
+            except Exception as e:
+                logger.warning(f"⚠️ Monday detection failed: {e}")
+                is_monday = False
+            
+            # Extract ticket IDs from the page with improved name detection
+            # ✅ IMPROVED: Multi-strategy extraction with Monday-specific enhancements
+            # ✅ NEW: Raw HTML parsing as fallback for edge cases
+            ids = await page.evaluate('''() => {
                 const results = [];
-                const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
-                buttons.forEach(btn => {
-                    const id = btn.getAttribute("data-cy").split("_")[1];
+                const seenIds = new Set();
+                
+                // STEP 1: Force expand ALL collapsible elements (critical for Mondays)
+                const expandButtons = document.querySelectorAll('[data-toggle="collapse"], .accordion-button, .btn-collapse, [aria-expanded="false"], .collapsed');
+                expandButtons.forEach(btn => {
+                    try {
+                        btn.click();
+                    } catch(e) {}
+                });
+                
+                // Also try to show hidden elements
+                const hiddenElements = document.querySelectorAll('[style*="display: none"], [style*="display:none"], .d-none, .hidden');
+                hiddenElements.forEach(el => {
+                    try {
+                        el.style.display = 'block';
+                        el.classList.remove('d-none', 'hidden');
+                    } catch(e) {}
+                });
+                
+                // STEP 2: Extract from div containers with id="ticket_XXXXX" (PRIMARY METHOD)
+                // ✅ IMPROVED: AGGRESSIVE title search with multiple fallback strategies
+                const ticketContainers = document.querySelectorAll('div[id^="ticket_"]');
+                
+                ticketContainers.forEach(container => {
+                    const containerId = container.getAttribute('id');
+                    const ticketId = containerId ? containerId.replace('ticket_', '') : null;
                     
-                    // Find Title: Go up to container and find title
-                    let container = btn.closest('div.card') || btn.closest('div.row') || btn.parentElement.parentElement;
-                    let title = "Unknown Title";
+                    // Skip if ID is invalid or already seen
+                    if (!ticketId || ticketId.startsWith('dx_') || seenIds.has(ticketId)) return;
                     
-                    if (container) {
-                        const titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .muvaTicketTitle');
-                        if (titleEl) title = titleEl.innerText.trim();
-                        else title = container.innerText.split('\n')[0].substring(0, 50);
+                    // ✅ AGGRESSIVE TITLE SEARCH - Multiple strategies
+                    let titleEl = null;
+                    let ticketName = null;
+                    
+                    // Strategy 1: Standard selectors
+                    titleEl = container.querySelector('.muvaTicketTitle');
+                    if (!titleEl) titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .ticket-title, span[class*="Title"]');
+                    
+                    // Strategy 2: Search in nested app-ticket-details
+                    if (!titleEl || !titleEl.textContent.trim()) {
+                        const detailsEl = container.querySelector('app-ticket-details');
+                        if (detailsEl) {
+                            titleEl = detailsEl.querySelector('.muvaTicketTitle, h1, h2, h3, h4, span[class*="title"], span[class*="Title"]');
+                        }
                     }
                     
-                    results.push({id: id, name: title});
+                    // Strategy 3: Search ANY span with substantial text (avoid prices/buttons)
+                    if (!titleEl || !titleEl.textContent.trim()) {
+                        const allSpans = container.querySelectorAll('span');
+                        for (const span of allSpans) {
+                            const text = span.textContent.trim();
+                            // Must be substantial text, not a price or button
+                            if (text.length > 10 && !text.includes('€') && !text.includes('PRENOTA') && !text.includes('BOOK')) {
+                                titleEl = span;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Strategy 4: Search in any child element with text
+                    if (!titleEl || !titleEl.textContent.trim()) {
+                        const allElements = container.querySelectorAll('*');
+                        for (const el of allElements) {
+                            // Get direct text content (not nested)
+                            const text = Array.from(el.childNodes)
+                                .filter(node => node.nodeType === Node.TEXT_NODE)
+                                .map(node => node.textContent.trim())
+                                .join(' ');
+                            if (text.length > 10 && !text.includes('€')) {
+                                titleEl = el;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    ticketName = titleEl ? titleEl.textContent.trim() : null;
+                    
+                    // Only add if we got a real name
+                    if (ticketName && ticketName.length > 5 && ticketName !== 'Unknown') {
+                        results.push({
+                            id: ticketId,
+                            name: ticketName
+                        });
+                        seenIds.add(ticketId);
+                    }
                 });
+                
+                // STEP 3: Parse raw HTML for ticket IDs (FALLBACK for Monday issues)
+                // This catches tickets that JavaScript extraction misses
+                const htmlContent = document.documentElement.innerHTML;
+                const ticketIdRegex = /id="ticket_(\\d+)"/g;
+                let match;
+                
+                while ((match = ticketIdRegex.exec(htmlContent)) !== null) {
+                    const ticketId = match[1];
+                    
+                    if (seenIds.has(ticketId)) continue;
+                    
+                    // Find the ticket name near this ID in the HTML
+                    const idPosition = match.index;
+                    const contextStart = Math.max(0, idPosition - 500);
+                    const contextEnd = Math.min(htmlContent.length, idPosition + 2000);
+                    const context = htmlContent.substring(contextStart, contextEnd);
+                    
+                    // Look for muvaTicketTitle in the context
+                    const titleMatch = context.match(/class="muvaTicketTitle"[^>]*>([^<]+)</);
+                    if (titleMatch) {
+                        const ticketName = titleMatch[1].trim();
+                        if (ticketName && ticketName.length > 5) {
+                            results.push({
+                                id: ticketId,
+                                name: ticketName
+                            });
+                            seenIds.add(ticketId);
+                        }
+                    }
+                }
+                
+                // STEP 4: Fallback to data-cy buttons if still no results
+                if (results.length === 0) {
+                    const buttons = document.querySelectorAll('[data-cy^="bookTicket_"]');
+                    buttons.forEach(btn => {
+                        const dataCy = btn.getAttribute('data-cy');
+                        const id = dataCy ? dataCy.replace('bookTicket_', '') : null;
+                        
+                        if (!id || seenIds.has(id)) return;
+                        
+                        // Find title by searching up the DOM tree
+                        let parent = btn.parentElement;
+                        let name = null;
+                        
+                        for (let i = 0; i < 10 && parent; i++) {
+                            const titleEl = parent.querySelector('.muvaTicketTitle, h1, h2, h3, h4, .card-title');
+                            if (titleEl && titleEl.textContent.trim()) {
+                                name = titleEl.textContent.trim();
+                                break;
+                            }
+                            parent = parent.parentElement;
+                        }
+                        
+                        if (name) {
+                            results.push({
+                                id: id,
+                                name: name
+                            });
+                            seenIds.add(id);
+                        }
+                    });
+                }
+                
                 return results;
-            }
-            """
+            }''')
             
-            ids = await page.evaluate(ids_js)
             # Filter duplicates if any
             unique_ids = list({v['id']: v for v in ids}.values())
             
+            extraction_time = time.time() - start_time
             logger.info(f"🔢 Resolved {len(unique_ids)} Dynamic IDs from Page")
+            logger.info(f"⏱️ Total extraction time: {extraction_time:.1f}s")
+            
+            # ✅ DEBUG: Log all ticket names found
+            for item in unique_ids:
+                logger.info(f"   • ID: {item['id']} | Name: {item['name']}")
+            
+            # ✅ CRITICAL CHECK: If we're missing Musei Vaticani on a Monday, log warning
+            if is_monday:
+                has_musei = any('musei' in item['name'].lower() and 'vaticani' in item['name'].lower() 
+                               for item in unique_ids)
+                if not has_musei:
+                    logger.warning("⚠️ MONDAY ISSUE: 'Musei Vaticani' not found in extracted tickets!")
+                    logger.warning(f"⚠️ Only found {len(unique_ids)} tickets - may need longer wait time")
+                else:
+                    logger.info("✅ Monday extraction successful - Musei Vaticani found!")
             
             # --- CACHE UPDATE ---
+            # ✅ Cache IDs with JSESSIONID - they are stable together!
+            # IDs are tied to the JSESSIONID and remain valid for the session
             try:
-                # 1. Update Cookies
-                # 2. Update IDs for this date
+                cookies = await page.context.cookies()
+                
+                # Get JSESSIONID
+                jsessionid = None
+                for cookie in cookies:
+                    if cookie['name'] == 'JSESSIONID':
+                        jsessionid = cookie['value']
+                        break
+                
+                # Cache IDs with their JSESSIONID
                 if "ids_cache" not in self.session_cache:
                     self.session_cache["ids_cache"] = {}
                 
-                self.session_cache["ids_cache"][target_date] = unique_ids
+                # Store IDs with JSESSIONID as key
+                cache_key = f"{target_date}_{visitors}_{ticket_type}"
+                self.session_cache["ids_cache"][cache_key] = {
+                    'ids': unique_ids,
+                    'jsessionid': jsessionid,
+                    'timestamp': datetime.now().isoformat()
+                }
                 
-                # 3. Save to File
+                # Save to file
                 self._save_session(cookies, self.session_cache["ids_cache"])
+                logger.info(f"💾 Cached {len(unique_ids)} IDs with JSESSIONID for session reuse")
             except Exception as e:
-                logger.error(f"⚠️ Failed to cache session in resolve_ids: {e}")
+                logger.error(f"⚠️ Failed to cache session: {e}")
 
             return unique_ids
 
@@ -921,158 +1279,215 @@ class HydraBot:
             logger.error(f"❌ Headless Check Error: {e}")
             return None
 
-    async def check_via_click(self, page, ticket_id, ticket_name, ticket_index=0):
+    async def check_via_api_direct(self, page, ticket_id, ticket_name, visit_date, visitors, language=None):
         """
-        ENHANCED: Handles both standard tickets AND guided tours with language selection
+        ✅ OPTIMIZED: Call API directly with extracted IDs and cookies
         
-        Key Pattern (from user observation):
-        - Tickets #1 and #8: Standard tickets (no language selector)
-        - Tickets #2-7, 9-10: Guided tours (require language selection)
+        This method assumes:
+        1. Page has already navigated to the deep link
+        2. Cookies are established in the browser context
+        3. We have the dynamic ticket ID
+        
+        Args:
+            page: Playwright page object (with established session)
+            ticket_id: The dynamic ticket ID
+            ticket_name: Human-readable name for logging
+            visit_date: Date in YYYY-MM-DD format
+            visitors: Number of visitors
+            language: Language code for guided tours (ENG/ITA/FRA/DEU/SPA) or None for standard tickets
+            
+        Returns:
+            Dict with slots: {"slots": [...], "language": language, "is_guided_tour": bool}
+        """
+        is_guided = language is not None
+        lang_str = f" ({language})" if language else ""
+        logger.info(f"🌐 API Direct Check: '{ticket_name}'{lang_str} (ID: {ticket_id})")
+        
+        try:
+            # Convert date to DD/MM/YYYY format for API
+            if '-' in visit_date:
+                parts = visit_date.split('-')
+                api_date = f"{parts[2]}/{parts[1]}/{parts[0]}"
+            elif '/' in visit_date:
+                api_date = visit_date
+            else:
+                api_date = visit_date
+            
+            logger.info(f"   📅 Date: {api_date}, Visitors: {visitors}, Language: {language or 'None'}")
+            
+            # Ensure we're on the Vatican domain before making API call
+            current_url = page.url
+            if 'museivaticani.va' not in current_url:
+                logger.warning(f"   ⚠️ Not on Vatican domain, current URL: {current_url}")
+                return {"slots": [], "language": language, "is_guided_tour": is_guided}
+            
+            # Build API URL with visitLang parameter for guided tours
+            visit_lang_param = language if language else ""
+            
+            # Call API using page.evaluate to leverage browser's session and cookies
+            api_result = await page.evaluate(f'''async () => {{
+                const url = '/api/visit/timeavail?lang=it&visitLang={visit_lang_param}&visitTypeId={ticket_id}&visitorNum={visitors}&visitDate=' + encodeURIComponent('{api_date}');
+                
+                console.log('Calling API:', url);
+                console.log('Full URL:', window.location.origin + url);
+                
+                try {{
+                    const response = await fetch(url, {{
+                        method: 'GET',
+                        headers: {{
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json'
+                        }},
+                        credentials: 'include'
+                    }});
+                    
+                    console.log('Response status:', response.status);
+                    
+                    if (response.ok) {{
+                        const data = await response.json();
+                        console.log('Response data:', data);
+                        return {{
+                            success: true,
+                            data: data,
+                            status: response.status
+                        }};
+                    }}
+                    
+                    const errorText = await response.text();
+                    console.error('Response not OK:', response.status, errorText);
+                    return {{
+                        success: false,
+                        status: response.status,
+                        statusText: response.statusText,
+                        error: errorText
+                    }};
+                }} catch (e) {{
+                    console.error('Fetch error:', e);
+                    return {{
+                        success: false,
+                        error: e.toString()
+                    }};
+                }}
+            }}''')
+            
+            if api_result and api_result.get('success'):
+                data = api_result.get('data', {})
+                timetable = data.get('timetable', [])
+                
+                logger.info(f"   ✅ API Response: {api_result.get('status')} - {len(timetable)} total slots")
+                
+                # Extract available slots
+                available = [t['time'] for t in timetable if t.get('availability') != 'SOLD_OUT']
+                sold_out = len(timetable) - len(available)
+                
+                logger.info(f"   📊 Available: {len(available)}, Sold Out: {sold_out}")
+                
+                if available:
+                    logger.info(f"   ✅ Found {len(available)} available slots")
+                    return {"slots": available, "language": language, "is_guided_tour": is_guided}
+                else:
+                    logger.info(f"   ❌ All slots are SOLD OUT")
+                    return {"slots": [], "language": language, "is_guided_tour": is_guided}
+            else:
+                status = api_result.get('status', 'unknown') if api_result else 'unknown'
+                error = api_result.get('error', 'Unknown error') if api_result else 'No response'
+                
+                # If API returns 500 or other error, it might be because the ticket ID is stale
+                logger.warning(f"   ⚠️ API call failed: Status {status} - {error}")
+                logger.warning(f"   ⚠️ Ticket ID might be stale, will retry with fresh IDs")
+                return {"slots": [], "language": language, "is_guided_tour": is_guided, "needs_refresh": True}
+                
+        except Exception as e:
+            logger.error(f"   ❌ API check failed: {e}")
+            return {"slots": [], "language": language, "is_guided_tour": is_guided, "needs_refresh": True}
+    
+    async def check_via_click(self, page, ticket_id, ticket_name, ticket_index=0, visit_date=None, visitors=1):
+        """
+        ✅ OPTIMIZED: Uses API directly for both standard and guided tickets
+        
+        For standard tickets: Calls API with visitLang=""
+        For guided tours: Calls API with visitLang set to each language (ENG/ITA/FRA/DEU/SPA)
         
         Args:
             page: Playwright page object
             ticket_id: The ticket ID to check
             ticket_name: Human-readable name for logging
-            ticket_index: Position in list (1-based) to detect if language needed
+            ticket_index: Position in list (1-based) - not used anymore
+            visit_date: Date in YYYY-MM-DD format (required for API calls)
+            visitors: Number of visitors (required for API calls)
             
         Returns:
-            Dict with slots and detected language: {"slots": [...], "language": "ENG" or None}
+            Dict with slots, detected language, and ticket type: 
+            {"slots": [...], "language": "ENG" or None, "is_guided_tour": True/False}
         """
-        logger.info(f"🖱️ Clicking '{ticket_name}' (ID: {ticket_id}, Index: {ticket_index})...")
+        logger.info(f"🎫 Checking '{ticket_name}' (ID: {ticket_id})...")
         
-        # Tickets that DON'T need language selection (based on user observation)
-        STANDARD_TICKET_INDICES = [1, 8]
+        # Detect if this is a standard ticket (no language) based on name
+        name_lower = ticket_name.lower()
+        
+        # Check for guided tour indicators (if any present, it's a guided tour)
+        is_guided_tour = any(keyword in name_lower for keyword in [
+            'guidate', 'guided', 'tour', 'visite guidate', 'visita guidata'
+        ])
+        
+        # Check for standard ticket indicators (Italian or English)
+        has_standard_keywords = any(keyword in name_lower for keyword in [
+            'biglietti', 'ingresso', 'admission', 'entry', 'standard entry', 'musei vaticani'
+        ])
+        
+        # It's a standard ticket if it has standard keywords AND no guided tour keywords
+        is_standard_ticket = has_standard_keywords and not is_guided_tour
+        
+        if not visit_date or not visitors:
+            logger.error(f"   ❌ Missing visit_date or visitors - cannot check via API")
+            return {"slots": [], "language": None, "is_guided_tour": not is_standard_ticket}
         
         try:
-            # 1. Click the ticket button
-            selector = f"[data-cy='bookTicket_{ticket_id}']"
-            btn = page.locator(selector)
-            
-            try:
-                await btn.scroll_into_view_if_needed(timeout=10000)
-                if await btn.is_disabled():
-                    logger.warning(f"⚠️ Button disabled for {ticket_id}")
-                    return {"slots": [], "language": None}
-                await btn.click(timeout=10000)
-            except Exception as e_click:
-                logger.warning(f"⚠️ Standard click failed for {ticket_id}: {e_click}. Trying JS Click...")
-                # Fallback: JS Click
-                found = await page.evaluate(f"""() => {{
-                    const btn = document.querySelector("{selector}");
-                    if (btn) {{
-                        btn.click();
-                        return true;
-                    }}
-                    return false;
-                }}""")
+            if is_standard_ticket:
+                # Standard ticket - call API once with no language
+                logger.info(f"   � Standard ticket - calling API")
+                return await self.check_via_api_direct(page, ticket_id, ticket_name, visit_date, visitors, language=None)
+            else:
+                # Guided tour - try each language
+                logger.info(f"   🌐 Guided tour - trying multiple languages")
                 
-                if not found:
-                    logger.error(f"❌ JS Click failed: Element {selector} not found in DOM")
-                    return {"slots": [], "language": None}
-                    
-                logger.info(f"✅ JS Click successful for {ticket_id}")
-
-            await page.wait_for_timeout(2000)  # Let modal load
-            
-            # 2. Check if language dropdown exists
-            lang_dropdown = page.locator("[data-cy='visitLang']")
-            has_language_selector = await lang_dropdown.count() > 0
-            
-            if has_language_selector and ticket_index not in STANDARD_TICKET_INDICES:
-                logger.info(f"   🌐 Language selector detected - trying languages...")
-                
-                # Try each language
                 languages_to_try = ["ENG", "ITA", "FRA", "DEU", "SPA"]
                 
                 for lang in languages_to_try:
-                    try:
-                        # Click dropdown
-                        await lang_dropdown.click()
-                        await page.wait_for_timeout(500)
-                        
-                        # Select language (languages are in divs, typically div:nth-of-type(N))
-                        # ENG=1, ITA=2, FRA=3, DEU=4, SPA=5 (usually)
-                        lang_index = languages_to_try.index(lang) + 1
-                        lang_option = page.locator(f"app-ticket-visit-language div:nth-of-type({lang_index})")
-                        
-                        # Setup listener BEFORE clicking language option
-                        async with page.expect_response(
-                            lambda r: "timeavail" in r.url and r.status == 200,
-                            timeout=3000
-                        ) as response_info:
-                            await lang_option.click()
-                        
-                        # Check response
-                        response = await response_info.value
-                        data = await response.json()
-                        
-                        time_slots = data.get("timetable", [])
-                        available = [t['time'] for t in time_slots if t.get('availability') != 'SOLD_OUT']
-                        
-                        if available:
-                            logger.info(f"   ✅ Found {len(available)} slots for {lang}")
-                            await page.keyboard.press("Escape")
-                            await page.wait_for_timeout(500)
-                            return {"slots": available, "language": lang}
-                        else:
-                            logger.info(f"   ❌ No slots for {lang}")
-                        
-                    except Exception as e:
-                        logger.debug(f"   Language {lang} check failed: {e}")
-                        continue
+                    logger.info(f"   🔍 Trying language: {lang}")
+                    
+                    result = await self.check_via_api_direct(
+                        page, 
+                        ticket_id, 
+                        ticket_name, 
+                        visit_date, 
+                        visitors, 
+                        language=lang
+                    )
+                    
+                    slots = result.get('slots', [])
+                    
+                    if slots:
+                        logger.info(f"   ✅ Found {len(slots)} slots for {lang}")
+                        return result
+                    else:
+                        logger.info(f"   ❌ No slots for {lang}")
                 
                 # No language had slots
                 logger.info(f"   ❌ No slots in any language")
-                await page.keyboard.press("Escape")
-                await page.wait_for_timeout(500)
-                return {"slots": [], "language": None}
-                
-            else:
-                # Standard ticket - no language selection needed
-                logger.info(f"   📋 Standard ticket (no language selector)")
-                
-                try:
-                    # Listen for the API call that was triggered by the initial button click
-                    async with page.expect_response(
-                        lambda r: "timeavail" in r.url and r.status == 200,
-                        timeout=5000
-                    ) as response_info:
-                        # Wait a bit for the API call to complete
-                        await page.wait_for_timeout(1000)
-                    
-                    response = await response_info.value
-                    data = await response.json()
-                    
-                    time_slots = data.get("timetable", [])
-                    available = [t['time'] for t in time_slots if t.get('availability') != 'SOLD_OUT']
-                    
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(500)
-                    
-                    if available:
-                        logger.info(f"   ✅ Found {len(available)} slots")
-                        return {"slots": available, "language": None}
-                    else:
-                        logger.info(f"   ❌ No slots available")
-                        return {"slots": [], "language": None}
-                except:
-                    # If timeout, no slots available
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(500)
-                    return {"slots": [], "language": None}
+                return {"slots": [], "language": None, "is_guided_tour": True}
                 
         except Exception as e:
             logger.error(f"⚠️ Check failed: {e}")
-            try:
-                await page.keyboard.press("Escape")
-            except:
-                pass
-            return {"slots": [], "language": None}
+            return {"slots": [], "language": None, "is_guided_tour": not is_standard_ticket}
     
-    async def check_via_api(self, page, visit_type_id, target_date, visitors=2, language="ENG", visit_lang=""):
+    async def check_via_api(self, page, visit_type_id, target_date, visitors=1, language=None, visit_lang=""):
         """
         FAST: Calls /api/visit/timeavail directly using browser fetch (keeps session).
         Replaces slow UI clicking.
+        
+        Args:
+            language: Language code for guided tours, None for standard tickets
         """
         try:
             # Format date as DD/MM/YYYY
@@ -1132,11 +1547,14 @@ class HydraBot:
 
 
 
-    async def _worker_task(self, worker_id, browser, proxy_str, dates_chunk, ticket_type, language="ENG", name_pattern=None):
+    async def _worker_task(self, worker_id, browser, proxy_str, dates_chunk, ticket_type, language=None, name_pattern=None):
         """
         Runs a solitary 'Virtual User' using Hybrid API-based checking.
         Prioritizes HEADLESS (No Browser) if session is valid.
         Falls back to BROWSER if fresh session needed.
+        
+        Args:
+            language: Language code for guided tours, None for standard tickets
         """
         results = []
         
@@ -1246,11 +1664,16 @@ class HydraBot:
 
 
 
-    async def run_once(self, ticket_type=0, language="ENG", name_pattern=None):
+    async def run_once(self, ticket_type=0, language=None, name_pattern=None):
         """
         Executes a PARALLEL TURBO pass.
         Launches 1 Browser, then N Contexts (Workers).
         Shards dates among available proxies.
+        
+        Args:
+            ticket_type: 0 for standard, 1 for guided tours
+            language: Language code (ENG/ITA/etc.) for guided tours, None for standard
+            name_pattern: Optional pattern to filter ticket names
         """
         results_map = {} # Maps date -> status
         

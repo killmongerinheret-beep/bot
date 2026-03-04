@@ -48,11 +48,11 @@ logger = logging.getLogger("VaticanLauncher")
 
 # Default dates to monitor (update these!)
 DEFAULT_DATES = [
+    "27/02/2026",
+    "28/02/2026",
     "01/03/2026",
     "02/03/2026",
     "03/03/2026",
-    "04/03/2026",
-    "05/03/2026",
 ]
 
 

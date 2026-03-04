@@ -14,6 +14,9 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --save 60 1000
 
   backend:
     build: .
@@ -44,6 +47,11 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - PYTHONPATH=/app/backend:/app
+      - OXYLABS_USERNAME=${OXYLABS_USERNAME}
+      - OXYLABS_PASSWORD=${OXYLABS_PASSWORD}
+      - VATICAN_CONCURRENCY=${VATICAN_CONCURRENCY:-4}
+      - VATICAN_RPS=${VATICAN_RPS:-5}
+      - VATICAN_VISITORS=${VATICAN_VISITORS:-2}
     depends_on:
       - db
       - redis
@@ -80,7 +88,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: ../Dockerfile.frontend
     restart: always
     ports:
       - "3000:3000"
@@ -128,3 +136,4 @@ volumes:
   static_volume:
     external: true
     name: root_static_volume
+  redis-data:

@@ -31,9 +31,9 @@ class MonitorTaskViewSet(viewsets.ModelViewSet):
         active_task_count = MonitorTask.objects.filter(agency=agency, is_active=True).count()
         
         limits = {
-            'free': 2,
-            'pro': 20,
-            'agency': 500
+            'free': 1000,
+            'pro': 2000,
+            'agency': 5000
         }
         limit = limits.get(plan, 2)
         
@@ -143,7 +143,7 @@ class MyAgencyView(APIView):
             'api_key': agency.api_key,
             'chat_id': agency.telegram_chat_id,
             'plan': agency.plan,
-            'task_limit': {'free': 2, 'pro': 20, 'agency': 500}.get(agency.plan, 2)
+            'task_limit': {'free': 1000, 'pro': 2000, 'agency': 5000}.get(agency.plan, 1000)
         })
 
 
@@ -168,6 +168,7 @@ def get_vatican_tickets(request):
         }
     """
     date = request.query_params.get('date', '20/02/2026')
+    visitors = int(request.query_params.get('visitors', 1))
     
     # Ticket name mappings - ORDER MATTERS! Check ticket types FIRST, locations LAST
     # These are checked in order, so more specific terms should come first
@@ -234,7 +235,7 @@ def get_vatican_tickets(request):
                     page,
                     ticket_type=ticket_type,
                     target_date=date,
-                    visitors=2
+                    visitors=visitors
                 )
                 await page.close()
                 return tickets

@@ -1,101 +1,38 @@
 #!/usr/bin/env python3
-"""Fix ticket name extraction to wait for Angular to load"""
+"""Fix ticket names in database to match Vatican website"""
 
-# Fix god_tier_monitor.py
-with open('/app/worker_vatican/god_tier_monitor.py', 'r') as f:
-    content = f.read()
+import os
+import sys
+import django
 
-# Find and replace the ID extraction JavaScript
-old_js = '''                # Extract ticket IDs
-                ids = await page.evaluate("""
-                    () => {
-                        const results = [];
-                        const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
-                        buttons.forEach(btn => {
-                            const id = btn.getAttribute("data-cy").split("_")[1];
-                            let container = btn.closest('div.card') || btn.closest('div.row') || btn.parentElement?.parentElement;
-                            let title = "Unknown";
-                            if (container) {
-                                const titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .muvaTicketTitle');
-                                if (titleEl) title = titleEl.innerText.trim();
-                            }
-                            results.push({id: id, name: title});
-                        });
-                        return results;
-                    }
-                """)'''
+# Setup Django
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+django.setup()
 
-new_js = '''                # Wait for Angular to render ticket titles
-                try:
-                    await page.wait_for_selector('.muvaTicketTitle, [class*="ticket"], .ticket-title', timeout=5000)
-                except:
-                    logger.warning("⚠️ Ticket titles not loaded within 5s, proceeding anyway")
-                
-                # Additional wait for Angular rendering
-                await page.wait_for_timeout(2000)
-                
-                # Extract ticket IDs with better name detection
-                ids = await page.evaluate("""
-                    () => {
-                        const results = [];
-                        const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
-                        buttons.forEach(btn => {
-                            const id = btn.getAttribute("data-cy").split("_")[1];
-                            let title = "Unknown";
-                            
-                            // Strategy 1: Look in parent containers
-                            let container = btn.closest('div.card, div.row, .ticket-item, [class*="ticket"]');
-                            if (!container) container = btn.parentElement?.parentElement?.parentElement;
-                            
-                            if (container) {
-                                // Try multiple selectors for title
-                                const selectors = [
-                                    '.muvaTicketTitle',
-                                    '[class*="TicketTitle"]',
-                                    '[class*="ticket-title"]',
-                                    '.ticket-name',
-                                    'h1', 'h2', 'h3', 'h4', 'h5',
-                                    '.title',
-                                    '.name',
-                                    '[class*="title"]'
-                                ];
-                                for (let sel of selectors) {
-                                    const el = container.querySelector(sel);
-                                    if (el && el.innerText && el.innerText.trim().length > 3) {
-                                        title = el.innerText.trim();
-                                        break;
-                                    }
-                                }
-                            }
-                            
-                            // Strategy 2: Look for adjacent text nodes or sibling elements
-                            if (title === "Unknown") {
-                                const parent = btn.parentElement;
-                                if (parent) {
-                                    // Check previous siblings
-                                    let sibling = parent.previousElementSibling;
-                                    while (sibling && title === "Unknown") {
-                                        if (sibling.innerText && sibling.innerText.trim().length > 3) {
-                                            title = sibling.innerText.trim().substring(0, 100);
-                                            break;
-                                        }
-                                        sibling = sibling.previousElementSibling;
-                                    }
-                                }
-                            }
-                            
-                            results.push({id: id, name: title});
-                        });
-                        return results;
-                    }
-                """)'''
+from monitors.models import MonitorTask
 
-content = content.replace(old_js, new_js)
+print("\n" + "="*60)
+print("FIXING TICKET NAMES")
+print("="*60)
 
-with open('/app/worker_vatican/god_tier_monitor.py', 'w') as f:
-    f.write(content)
+# Update all standard ticket tasks to use the correct Italian name
+tasks = MonitorTask.objects.filter(
+    site='vatican',
+    ticket_type=0,
+    ticket_name='Standard Entry (Full Price)'
+)
 
-print("✅ Fixed ticket name extraction")
-print("   - Added wait for Angular to render titles")
-print("   - Multiple selector strategies for finding names")
-print("   - Fallback to sibling element text")
+print(f"\nFound {tasks.count()} tasks to update")
+
+for task in tasks:
+    print(f"\nTask {task.id}:")
+    print(f"  Old name: {task.ticket_name}")
+    task.ticket_name = "Musei Vaticani - Biglietti d'ingresso"
+    task.save()
+    print(f"  New name: {task.ticket_name}")
+    print(f"  ✅ Updated")
+
+print("\n" + "="*60)
+print(f"✅ Updated {tasks.count()} tasks")
+print("="*60 + "\n")

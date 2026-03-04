@@ -162,8 +162,13 @@ export const api = {
     },
 
     // ✅ NEW: Vatican Ticket Discovery
-    getVaticanTickets: async (date: string) => {
-        const res = await fetch(`${getApiUrl()}/vatican/tickets/?date=${encodeURIComponent(date)}`);
+    getVaticanTickets: async (date: string, visitors?: number) => {
+        const params = new URLSearchParams();
+        params.append('date', date);
+        if (visitors) {
+            params.append('visitors', visitors.toString());
+        }
+        const res = await fetch(`${getApiUrl()}/vatican/tickets/?${params.toString()}`);
         if (!res.ok) throw new Error(' Failed to fetch Vatican tickets');
         return res.json();
     }
