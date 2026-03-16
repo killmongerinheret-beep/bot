@@ -41,6 +41,40 @@ VATICAN_MONITOR_MODE = os.getenv('VATICAN_MONITOR_MODE', 'hybrid')
 
 logger.info(f"🚀 Vatican Monitor Mode: {VATICAN_MONITOR_MODE}")
 
+def normalize_date(date_str):
+    """
+    Normalize any date format to DD/MM/YYYY for Vatican API.
+    Handles: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY
+    Returns None if date is in the past or invalid.
+    """
+    from datetime import datetime, date as date_type
+    try:
+        # Parse the date
+        if '-' in date_str and len(date_str) == 10 and date_str[4] == '-':
+            # YYYY-MM-DD
+            dt = datetime.strptime(date_str, '%Y-%m-%d').date()
+        elif '/' in date_str:
+            # DD/MM/YYYY
+            dt = datetime.strptime(date_str, '%d/%m/%Y').date()
+        elif '-' in date_str:
+            # DD-MM-YYYY
+            dt = datetime.strptime(date_str, '%d-%m-%Y').date()
+        else:
+            logger.error(f"❌ Unknown date format: {date_str}")
+            return None
+
+        # Skip past dates
+        today = date_type.today()
+        if dt < today:
+            logger.info(f"⏭️ Skipping past date: {date_str} ({dt})")
+            return None
+
+        return dt.strftime('%d/%m/%Y')
+    except Exception as e:
+        logger.error(f"❌ Date normalization failed for '{date_str}': {e}")
+        return None
+
+
 def get_proxy_str(site='vatican'):
     """Helper to select the best proxy using Smart Reputation Logic"""
     now = timezone.now()
@@ -1131,12 +1165,25 @@ def resolve_and_check_task(task_id):
         cache.delete(queue_key)
         
         task = MonitorTask.objects.get(id=task_id)
-        
+
+        # ✅ Normalize and validate date before anything else
+        if not task.dates:
+            logger.warning(f"⚠️ Task #{task_id} has no dates - skipping")
+            return f"Skipped: no dates"
+
+        date_normalized = normalize_date(task.dates[0])
+        if not date_normalized:
+            logger.info(f"⏭️ Task #{task_id} date '{task.dates[0]}' is past or invalid - skipping")
+            # Mark as closed (not error) so dashboard doesn't show red
+            task.last_status = 'closed'
+            task.save(update_fields=['last_status'])
+            return f"Skipped: past date {task.dates[0]}"
+
         if task.ticket_id:
             # Already has ID, just check it
             logger.info(f"✅ Task #{task_id} already has ticket_id, checking directly")
             return run_god_tier_vatican_monitor(
-                date=task.dates[0],
+                date=date_normalized,
                 ticket_id=task.ticket_id,
                 ticket_name=task.ticket_name,
                 language=task.language,
@@ -1155,13 +1202,11 @@ def resolve_and_check_task(task_id):
             async with bot.get_browser() as browser:
                 page = await browser.new_page()
                 
-                # Convert date format if needed
-                date = task.dates[0]
-                if '-' in date:
-                    year, month, day = date.split('-')
-                    date_formatted = f"{day}/{month}/{year}"
-                else:
-                    date_formatted = date
+                # ✅ Normalize date format (handles YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY)
+                date_formatted = normalize_date(task.dates[0])
+                if not date_formatted:
+                    await page.close()
+                    return None  # Past or invalid date - skip silently
                 
                 # Resolve all IDs
                 resolved_ids = await bot.resolve_all_dynamic_ids(
@@ -1248,7 +1293,7 @@ def resolve_and_check_task(task_id):
             
             # Now check the task using the smart path
             return run_god_tier_vatican_monitor(
-                date=task.dates[0],
+                date=date_normalized,
                 ticket_id=fresh_id,
                 ticket_name=task.ticket_name,
                 language=task.language,
@@ -1256,13 +1301,9 @@ def resolve_and_check_task(task_id):
                 visitors=task.visitors
             )
         else:
-            logger.error(f"❌ CRITICAL: Could not resolve ticket_id for Task #{task_id}")
-            logger.error(f"   Task will NOT be checked until ticket_id is resolved")
-            logger.error(f"   Ticket: {task.ticket_name}, Date: {task.dates[0] if task.dates else 'N/A'}")
-            task.last_status = 'error'
-            task.last_result_summary = 'CRITICAL: Could not resolve ticket ID - task cannot be checked'
-            task.save()
-            return f"FAILED: Could not resolve ticket_id for task {task_id} - TASK WILL NOT BE CHECKED"
+            logger.warning(f"⚠️ Could not resolve ticket_id for Task #{task_id} - will retry next cycle")
+            # Don't set error - just leave status as-is and retry next orchestration cycle
+            return f"Skipped: Could not resolve ticket_id for task {task_id} - will retry"
             
     except Exception as e:
         logger.error(f"Error in resolve_and_check_task: {e}")
@@ -1310,8 +1351,11 @@ def orchestrate_all_tasks():
                     tasks_needing_id.append(task)
                 else:
                     # Has ticket_id - add to smart groups
-                    for date in task.dates:
-                        # Format: DD/MM/YYYY
+                    for raw_date in task.dates:
+                        # ✅ Normalize date + skip past/invalid dates silently
+                        date = normalize_date(raw_date)
+                        if not date:
+                            continue
                         # Group by EXACT combo including visitors
                         key = (date, task.ticket_id, task.language or None, task.visitors)
                         
@@ -1329,6 +1373,12 @@ def orchestrate_all_tasks():
     if tasks_needing_id:
         logger.info(f"🔍 {len(tasks_needing_id)} tasks REQUIRE ticket_id resolution")
         for task in tasks_needing_id:
+            # Skip if all dates are past
+            valid_dates = [d for d in task.dates if normalize_date(d)]
+            if not valid_dates:
+                logger.info(f"⏭️ Task #{task.id} has no future dates - skipping resolution")
+                continue
+
             # ✅ SPAM PREVENTION: Check if already queued (using Redis cache)
             queue_key = f"resolving:{task.id}"
             if cache.get(queue_key):

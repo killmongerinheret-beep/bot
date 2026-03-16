@@ -2,7 +2,7 @@
   "cookies": [
     {
       "name": "JSESSIONID",
-      "value": "BF66EFD85FC374ACE6ABEAB43B3AC23E",
+      "value": "900FA33E80E5FB2404EE98E4A6302247",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -12,7 +12,17 @@
     },
     {
       "name": "ticketmv",
-      "value": "04",
+      "value": "01",
+      "domain": "tickets.museivaticani.va",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "SERVERID",
+      "value": "04|abfkl",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -22,225 +32,149 @@
     }
   ],
   "ids_cache": {
-    "10/03/2026_2_0": {
+    "30/03/2026_1_0": {
+      "ids": [
+        {
+          "id": "2043368921",
+          "name": "Mostra solo visite prenotabili"
+        },
+        {
+          "id": "797591429",
+          "name": "Specola Vaticana - Visita Guidata Gruppi"
+        },
+        {
+          "id": "420197727",
+          "name": "Palazzo Papale - Cupole Astronomiche"
+        },
+        {
+          "id": "1726055591",
+          "name": "Palazzo Papale - Biglietti d'ingresso"
+        },
+        {
+          "id": "971268187",
+          "name": "Palazzo Papale - Visita Guidata Gruppi"
+        },
+        {
+          "id": "1348661889",
+          "name": "Palazzo Papale - Reparti Chiusi"
+        },
+        {
+          "id": "710753050",
+          "name": "Palazzo Papale - Reparti Chiusi"
+        },
+        {
+          "id": "884429808",
+          "name": "N. Partecipanti 11 - 25"
+        },
+        {
+          "id": "129642404",
+          "name": "N. Partecipanti 11 - 30"
+        },
+        {
+          "id": "2130207300",
+          "name": "Borgo Laudato si' - Mezzo Ecologico"
+        }
+      ],
+      "jsessionid": "DB932FA890EAEFF3522D628D35FB1A41",
+      "timestamp": "2026-03-16T11:05:29.618157"
+    },
+    "16/03/2026_1_0": {
       "ids": [],
-      "jsessionid": "3725143114229B444D32FF6A52FD73A2",
-      "timestamp": "2026-03-16T09:00:31.428552"
+      "jsessionid": "F416ACD9ACEF6128277C6610C3B7B142",
+      "timestamp": "2026-03-16T10:59:44.638093"
     },
     "11/05/2026_1_0": {
       "ids": [
         {
-          "id": "956254114",
+          "id": "462200098",
           "name": "Specola Vaticana - Visita Guidata Gruppi"
         },
         {
-          "id": "819672548",
+          "id": "1418599767",
           "name": "Palazzo Papale - Cupole Astronomiche"
         },
         {
-          "id": "58317477",
+          "id": "305743892",
           "name": "Palazzo Papale - Biglietti d'ingresso"
         },
         {
-          "id": "1932637992",
+          "id": "71059583",
           "name": "Palazzo Papale - Visita Guidata Gruppi"
         },
         {
-          "id": "2069219558",
+          "id": "1262143561",
           "name": "Palazzo Papale - Reparti Chiusi"
         },
         {
-          "id": "468062175",
+          "id": "1731512179",
           "name": "Palazzo Papale - Reparti Chiusi"
         },
         {
-          "id": "1444446053",
+          "id": "1340371664",
           "name": "N. Partecipanti 11 - 25"
         },
         {
-          "id": "1171282921",
+          "id": "1105687355",
           "name": "N. Partecipanti 11 - 30"
         },
         {
-          "id": "20496068",
+          "id": "575753067",
           "name": "Borgo Laudato si' - Mezzo Ecologico"
         },
         {
-          "id": "1406624644",
+          "id": "1610380839",
           "name": "Borgo Laudato si' - Passeggiata"
         }
       ],
-      "jsessionid": "335681D54DF715CF5789BC587C657D15",
-      "timestamp": "2026-03-16T09:08:46.984867"
+      "jsessionid": "900FA33E80E5FB2404EE98E4A6302247",
+      "timestamp": "2026-03-16T11:08:49.276559"
     },
-    "10/03/2026_2_1": {
-      "ids": [],
-      "jsessionid": "B47899C6E9A179FF5A959FDAAA3B94F1",
-      "timestamp": "2026-03-16T09:01:37.892504"
-    },
-    "21/06/2026_4_0": {
+    "23/03/2026_1_0": {
       "ids": [
         {
-          "id": "773933482",
-          "name": "Musei Vaticani - Biglietti d'ingresso"
-        },
-        {
-          "id": "648915389",
-          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
-        },
-        {
-          "id": "2044012633",
-          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
-        },
-        {
-          "id": "1829775686",
-          "name": "N. Partecipanti 1 - 20"
-        },
-        {
-          "id": "1077389283",
-          "name": "N. Partecipanti 1 - 20"
-        },
-        {
-          "id": "1720100124",
-          "name": "N. Partecipanti 1 - 20"
-        },
-        {
-          "id": "2038898456",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "1824661509",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "858038159",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "434678442",
-          "name": "N. Partecipanti 1 - 10"
-        }
-      ],
-      "jsessionid": "7DF922F2FC6248E23709D70924FB0C31",
-      "timestamp": "2026-03-16T09:00:59.563946"
-    },
-    "16/06/2026_2_0": {
-      "ids": [],
-      "jsessionid": "8B8817889DFB49592926A27D9EA327C9",
-      "timestamp": "2026-03-15T11:03:32.821212"
-    },
-    "15/06/2026_2_1": {
-      "ids": [
-        {
-          "id": "406351845",
+          "id": "1921734034",
           "name": "Specola Vaticana - Visita Guidata Gruppi"
         },
         {
-          "id": "961217246",
+          "id": "1976197257",
           "name": "Palazzo Papale - Cupole Astronomiche"
         },
         {
-          "id": "1862000262",
+          "id": "562695900",
           "name": "Palazzo Papale - Biglietti d'ingresso"
         },
         {
-          "id": "824247417",
+          "id": "671622346",
           "name": "Palazzo Papale - Visita Guidata Gruppi"
         },
         {
-          "id": "269382016",
+          "id": "617159123",
           "name": "Palazzo Papale - Reparti Chiusi"
         },
         {
-          "id": "197404059",
+          "id": "399306231",
           "name": "Palazzo Papale - Reparti Chiusi"
         },
         {
-          "id": "615299631",
+          "id": "1296678190",
           "name": "N. Partecipanti 11 - 25"
         },
         {
-          "id": "1725030433",
+          "id": "1405604636",
           "name": "N. Partecipanti 11 - 30"
         },
         {
-          "id": "2428443",
+          "id": "1434107468",
           "name": "Borgo Laudato si' - Mezzo Ecologico"
         },
         {
-          "id": "903211459",
+          "id": "20606111",
           "name": "Borgo Laudato si' - Passeggiata"
         }
       ],
-      "jsessionid": "B065EE37163FEB2C0B385A82F3CEC9E7",
-      "timestamp": "2026-03-15T08:45:32.279010"
-    },
-    "2026-05-14_6_0": {
-      "ids": [
-        {
-          "id": "1280403935",
-          "name": "Musei Vaticani - Biglietti d'ingresso"
-        },
-        {
-          "id": "1113354692",
-          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
-        },
-        {
-          "id": "919353973",
-          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
-        },
-        {
-          "id": "435242240",
-          "name": "N. Partecipanti 1 - 28"
-        },
-        {
-          "id": "1057671611",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "1902833306",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "406510635",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "1958516387",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "863670892",
-          "name": "N. Partecipanti 11 - 30"
-        },
-        {
-          "id": "1833674487",
-          "name": "N. Partecipanti 11 - 30"
-        }
-      ],
-      "jsessionid": "37316E3B87354562881E97050A0DCCBA",
-      "timestamp": "2026-03-15T11:41:24.839705"
-    },
-    "20/06/2026_4_0": {
-      "ids": [],
-      "jsessionid": "332DC9A3E6CD8D33AA39E471299DCC42",
-      "timestamp": "2026-03-15T11:07:24.877747"
-    },
-    "22/06/2026_4_0": {
-      "ids": [],
-      "jsessionid": "E2AB5B5CB9B9540680748BA7D3B799DA",
-      "timestamp": "2026-03-15T11:09:49.549146"
-    },
-    "16/03/2026_1_0": {
-      "ids": [],
-      "jsessionid": "BF66EFD85FC374ACE6ABEAB43B3AC23E",
-      "timestamp": "2026-03-16T09:10:01.086025"
-    },
-    "15/06/2026_2_0": {
-      "ids": [],
-      "jsessionid": "8196A592F7A066B53F8811A5857FA04B",
-      "timestamp": "2026-03-15T19:40:21.824318"
+      "jsessionid": "AF7FFC031A686A6AC26A4AD86416232E",
+      "timestamp": "2026-03-16T11:07:47.567657"
     }
   },
-  "last_updated": "2026-03-16T09:10:01.086042"
+  "last_updated": "2026-03-16T11:08:49.276571"
 }

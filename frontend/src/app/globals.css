@@ -14,6 +14,7 @@
 
 @layer base {
   :root {
+    color-scheme: dark;
     --background: #050505;
     --foreground: #ffffff;
     --card: #0F0F0F;
@@ -48,12 +49,40 @@
 
 @layer base {
   body {
-    @apply bg-void text-white font-sans antialiased;
+    background-color: #050505;
+    color: #ffffff;
+    font-family: 'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     line-height: 1.6;
   }
 
   html {
     scroll-behavior: smooth;
+  }
+
+  /* Force dark on ALL native inputs - prevents white flash on mobile */
+  input, select, textarea, option {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    border-color: #262626;
+    color-scheme: dark;
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: #555555;
+  }
+
+  /* Date input calendar icon color */
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    opacity: 0.5;
+  }
+
+  /* Select arrow */
+  select option {
+    background-color: #1a1a1a;
+    color: #ffffff;
   }
 }
 
@@ -67,31 +96,65 @@
   }
 
   .bento-card {
-    @apply bg-graphite border border-stroke rounded-3xl p-8 flex flex-col justify-between overflow-hidden transition-all duration-300;
+    background-color: #0F0F0F;
+    border: 1px solid #262626;
+    border-radius: 1.5rem;
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    overflow: hidden;
+    transition: all 0.3s;
   }
 
   .bento-card:hover {
-    @apply border-stroke-hover;
+    border-color: #404040;
   }
 
   .btn-primary {
-    @apply bg-signal text-void px-8 py-4 rounded-full font-medium text-sm inline-flex items-center gap-2 transition-all duration-200;
+    background-color: #00E37C;
+    color: #050505;
+    padding: 1rem 2rem;
+    border-radius: 9999px;
+    font-weight: 500;
+    font-size: 0.875rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: all 0.2s;
   }
 
   .btn-primary:hover {
-    @apply scale-105;
+    transform: scale(1.05);
   }
 
   .btn-secondary {
-    @apply bg-transparent text-white px-8 py-4 rounded-full font-medium text-sm border border-stroke transition-all duration-200;
+    background-color: transparent;
+    color: #ffffff;
+    padding: 1rem 2rem;
+    border-radius: 9999px;
+    font-weight: 500;
+    font-size: 0.875rem;
+    border: 1px solid #262626;
+    transition: all 0.2s;
   }
 
   .btn-secondary:hover {
-    @apply border-stroke-hover bg-white/5;
+    border-color: #404040;
+    background-color: rgba(255,255,255,0.05);
   }
 
   .status-pill {
-    @apply inline-flex items-center gap-2 bg-signal/10 border border-signal/20 text-signal px-4 py-2 rounded-full text-sm font-medium;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background-color: rgba(0,227,124,0.1);
+    border: 1px solid rgba(0,227,124,0.2);
+    color: #00E37C;
+    padding: 0.5rem 1rem;
+    border-radius: 9999px;
+    font-size: 0.875rem;
+    font-weight: 500;
   }
 }
 
@@ -100,14 +163,14 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-void);
+  background: #050505;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-stroke);
+  background: #262626;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-stroke-hover);
+  background: #404040;
 }

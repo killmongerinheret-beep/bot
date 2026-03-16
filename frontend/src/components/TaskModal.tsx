@@ -97,20 +97,21 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
 
     return (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-6 bg-[#050505]/80 backdrop-blur-xl">
-            <div className="bento-card w-full sm:max-w-xl relative overflow-hidden max-h-[92vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
+            <div className="w-full sm:max-w-xl bg-[#0F0F0F] border border-[#262626] relative overflow-hidden max-h-[92vh] overflow-y-auto rounded-t-2xl rounded-b-none sm:rounded-2xl">
                 {/* Green accent bar */}
-                <div className="absolute top-0 left-0 w-full h-1 bg-[#00E37C]" style={{ marginTop: '-32px', marginLeft: '-32px', width: 'calc(100% + 64px)' }}></div>
+                <div className="h-1 w-full bg-[#00E37C]" />
 
+                <div className="p-6">
                 <button
                     onClick={onClose}
-                    className="absolute top-2 right-2 text-[#888888] hover:text-white transition-colors w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#262626]"
+                    className="absolute top-3 right-3 text-[#888888] hover:text-white transition-colors w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#262626]"
                 >
                     <X size={18} />
                 </button>
 
-                <div className="mb-8">
-                    <h2 className="text-2xl font-semibold text-white tracking-tight">Enterprise Monitor</h2>
-                    <p className="text-[#888888] text-sm mt-1">Configure high-speed automated tracking</p>
+                <div className="mb-6">
+                    <h2 className="text-xl font-semibold text-white tracking-tight">New Monitor</h2>
+                    <p className="text-[#888888] text-sm mt-1">Configure automated ticket tracking</p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-6">
@@ -201,11 +202,12 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                     <button
                         disabled={loading || !agencyId || !selectedTicketId}
                         type="submit"
-                        className="btn-primary w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="w-full bg-[#00E37C] text-[#050505] font-semibold py-3 rounded-xl hover:bg-[#00E37C]/90 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                     >
                         {!agencyId ? 'Initializing Session...' : loading ? 'Creating Monitor...' : 'Create Monitor'}
                     </button>
                 </form>
+                </div>
             </div>
         </div>
     );

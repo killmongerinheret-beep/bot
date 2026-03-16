@@ -254,7 +254,7 @@ export default function DashboardPage() {
               { icon: <Building2 className="w-4 h-4 text-purple-400" />, bg: 'bg-purple-500/10', val: currentAgency.plan, label: 'Plan', capitalize: true },
               { icon: <Zap className="w-4 h-4 text-emerald-400" />, bg: 'bg-emerald-500/10', val: tasks.filter(t => t.last_status === 'available').length > 0 ? `${Math.round((tasks.filter(t => t.last_status === 'available').length / Math.max(tasks.length, 1)) * 100)}%` : '0%', label: 'Available' },
             ].map(({ icon, bg, val, label, capitalize }) => (
-              <div key={label} className="bento-card !p-4">
+              <div key={label} className="bg-[#0F0F0F] border border-[#262626] rounded-2xl p-4">
                 <div className="flex items-center gap-2.5">
                   <div className={`w-8 h-8 ${bg} rounded-lg flex items-center justify-center shrink-0`}>{icon}</div>
                   <div className="min-w-0">
@@ -277,7 +277,7 @@ export default function DashboardPage() {
                     </motion.div>
                   ))}
                   {(!Array.isArray(tasks) || tasks.length === 0) && (
-                    <div className="col-span-full bento-card flex flex-col items-center justify-center text-center py-16">
+                    <div className="col-span-full bg-[#0F0F0F] border border-[#262626] rounded-2xl flex flex-col items-center justify-center text-center py-16">
                       <div className="w-14 h-14 bg-[#262626] rounded-full flex items-center justify-center mb-4">
                         <Globe className="w-6 h-6 text-[#888888]" />
                       </div>
