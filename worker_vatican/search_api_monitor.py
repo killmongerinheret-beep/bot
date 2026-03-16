@@ -318,25 +318,26 @@ class VaticanSearchAPIMonitor:
                         if slot.get('availability') != 'SOLD_OUT'
                     ]
                     
-                    logger.info(f"✅ Timeavail API success")
-                    logger.info(f"   Total slots: {len(timetable)}")
-                    logger.info(f"   Available: {len(available_slots)}")
-                    
+                    logger.info(f"✅ Timeavail: {len(available_slots)}/{len(timetable)} slots available")
                     if available_slots:
-                        logger.info(f"   First 3 slots: {', '.join(available_slots[:3])}")
+                        logger.info(f"   First 3: {', '.join(available_slots[:3])}")
                     
                     return True, available_slots
                 else:
-                    logger.error(f"❌ No timetable in response")
-                    return False, []
+                    # No timetable = sold out
+                    logger.info(f"⏭️ No timetable in timeavail response - sold_out")
+                    return True, []
+            elif response.status_code == 500:
+                # Vatican returns 500 for sold-out or stale ticket IDs - not an error
+                logger.info(f"⏭️ Timeavail HTTP 500 (sold_out or stale ID) - treating as sold_out")
+                return True, []
             else:
-                logger.error(f"❌ Timeavail API error: {response.status_code}")
-                logger.error(f"   Response: {response.text[:200]}")
-                return False, []
+                logger.warning(f"⚠️ Timeavail HTTP {response.status_code} - treating as sold_out")
+                return True, []
                 
         except Exception as e:
-            logger.error(f"❌ Timeavail API exception: {e}")
-            return False, []
+            logger.warning(f"⚠️ Timeavail exception: {e} - treating as sold_out")
+            return True, []
     
     def check_ticket(
         self,
@@ -377,6 +378,13 @@ class VaticanSearchAPIMonitor:
         if not ticket_id:
             logger.warning(f"⚠️ Could not match ticket '{ticket_name}' - treating as sold_out")
             return True, [], None  # Return success=True, empty slots = sold_out (not error)
+
+        # ✅ OPTIMIZATION: If search API already says SOLD_OUT, skip timeavail entirely
+        # Vatican returns HTTP 500 on timeavail for sold-out tickets - no point calling it
+        matched_ticket = next((t for t in tickets if t['id'] == ticket_id), None)
+        if matched_ticket and matched_ticket.get('availability') in ('SOLD_OUT', 'NOT_ALLOWED'):
+            logger.info(f"⏭️ Search API says {matched_ticket['availability']} for {ticket_name} - skipping timeavail")
+            return True, [], ticket_id  # sold_out, no error
         
         # Step 3: Check availability
         success, available_slots = self.check_availability(
