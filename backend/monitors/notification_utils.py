@@ -14,6 +14,14 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Telegram Markdown"""
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 def format_vatican_notification(
     date: str,
     ticket_name: str,
@@ -82,14 +90,25 @@ def format_vatican_notification(
         logger.warning(f"Could not generate booking link: {e}")
         booking_link = "https://tickets.museivaticani.va/home"
     
-    # Build message
+    # Build message - Plain text to avoid Markdown parsing issues
     lang_info = f" ({language})" if language else ""
     
-    message = f"🎉 *TICKETS JUST OPENED!*\n\n"
-    message += f"📅 *Date:* {date}\n"
-    message += f"🎫 *Ticket:* {ticket_name}{lang_info}\n"
-    message += f"👥 *Visitors:* {visitors}\n"
-    message += f"🔍 *Method:* {check_method.title()}\n\n"
+    # Get current time for "Checked at" info
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    
+    rome_tz = ZoneInfo('Europe/Rome')
+    now = datetime.now(rome_tz)
+    checked_at = now.strftime("%H:%M:%S")
+    
+    message = f"🎉 TICKETS JUST OPENED!\n\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    message += f"📅 DATE: {date}\n"
+    message += f"🎫 TICKET: {ticket_name}{lang_info}\n"
+    message += f"👥 VISITORS: {visitors}\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    message += f"⏰ Checked at: {checked_at} Rome time\n"
+    message += f"🔍 Method: {check_method}\n\n"
     
     # Categorize slots
     preferred_slots = []
@@ -117,26 +136,27 @@ def format_vatican_notification(
     
     # Add preferred slots first (highlighted)
     if preferred_slots:
-        message += f"⭐ *YOUR PREFERRED TIMES:*\n"
-        for slot in preferred_slots[:5]:
+        message += f"⭐ YOUR PREFERRED TIMES ({len(preferred_slots)}):\n"
+        for slot in preferred_slots:
             message += f"   ⭐ {slot}\n"
-        if len(preferred_slots) > 5:
-            message += f"   ... and {len(preferred_slots) - 5} more preferred\n"
         message += "\n"
     
-    # Add other available slots
-    display_slots = other_slots[:10] if preferred_slots else other_slots[:15]
-    message += f"🕐 *Other Available Times* ({len(slots)} total):\n"
-    for slot in display_slots:
-        message += f"   • {slot}\n"
+    # Add ALL other available slots (no limit)
+    if other_slots:
+        message += f"🕐 {'Other ' if preferred_slots else ''}Available Times ({len(other_slots)}):\n"
+        for slot in other_slots:
+            message += f"   • {slot}\n"
+        message += "\n"
     
-    remaining = len(other_slots) - len(display_slots)
-    if remaining > 0:
-        message += f"   ... and {remaining} more\n"
+    # Show total count
+    message += f"📊 Total Available Slots: {len(slots)}\n\n"
     
-    # Add booking link
-    message += f"\n🔗 [*Click Here to Book Now*]({booking_link})\n"
-    message += f"\n⚡ Act fast - tickets sell quickly!"
+    # Add booking link with emphasis
+    message += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    message += f"🔗 BOOK NOW:\n"
+    message += f"{booking_link}\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    message += f"⚡ Act fast - tickets sell quickly!"
     
     return message
 
@@ -144,6 +164,7 @@ def format_vatican_notification(
 def send_telegram_signal(chat_id: str, message: str) -> bool:
     """
     Send a Telegram message with HTML/Markdown formatting.
+    Now checks if group is approved before sending.
     
     Args:
         chat_id: Telegram chat ID
@@ -153,6 +174,23 @@ def send_telegram_signal(chat_id: str, message: str) -> bool:
         True if sent successfully, False otherwise
     """
     import requests
+    from monitors.models import TelegramGroup
+    
+    # Check if this is a group and if it's approved
+    try:
+        group = TelegramGroup.objects.filter(chat_id=str(chat_id)).first()
+        
+        if group:
+            if not group.is_approved():
+                logger.warning(f"⏭️ Skipping notification to unapproved group: {chat_id} (status: {group.status})")
+                return False
+            
+            if not group.notification_enabled:
+                logger.info(f"🔕 Notifications disabled for group: {chat_id}")
+                return False
+    except Exception as e:
+        logger.error(f"❌ Error checking group approval: {e}")
+        # Continue anyway for backward compatibility with direct chat_ids
     
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
@@ -162,19 +200,27 @@ def send_telegram_signal(chat_id: str, message: str) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     
     try:
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "disable_web_page_preview": False
+        }
+        
         response = requests.post(
             url,
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": False
-            },
+            json=payload,
             timeout=10
         )
         
         if response.status_code == 200:
             logger.info(f"✅ Telegram signal sent to {chat_id}")
+            
+            # Update last_activity for the group
+            if group:
+                from django.utils import timezone
+                group.last_activity = timezone.now()
+                group.save(update_fields=['last_activity'])
+            
             return True
         else:
             logger.error(f"❌ Telegram API error: {response.status_code} - {response.text}")

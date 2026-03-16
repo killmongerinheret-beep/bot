@@ -15,6 +15,12 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 # Load task modules from all registered Django apps.
 app.autodiscover_tasks()
 
+# Explicitly import tasks_search_api to ensure registration
+app.autodiscover_tasks(['monitors'], related_name='tasks_search_api')
+
+# Explicitly import main tasks module to ensure registration
+app.autodiscover_tasks(['monitors'], related_name='tasks')
+
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     print(f'Request: {self.request!r}')

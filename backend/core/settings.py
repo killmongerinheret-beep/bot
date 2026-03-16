@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 from pathlib import Path
 import os
 import environ
+import socket
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -60,6 +61,14 @@ CSRF_COOKIE_SECURE = True
 env = environ.Env(
     DEBUG=(bool, False)
 )
+
+# Load .env from project root if present
+ENV_FILE = (BASE_DIR.parent / '.env')
+if os.path.exists(ENV_FILE):
+    try:
+        environ.Env.read_env(str(ENV_FILE))
+    except Exception:
+        pass
 
 # Application definition
 
@@ -153,10 +162,24 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# Celery Configuration Options
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
+def _fix_redis_host(url: str) -> str:
+    """
+    Use localhost if 'redis' hostname is not resolvable in this environment.
+    """
+    try:
+        socket.getaddrinfo('redis', 6379)
+        return url
+    except OSError:
+        if url.startswith('redis://redis:'):
+            return url.replace('redis://redis:', 'redis://localhost:', 1)
+        return url
+
+# Celery Configuration Options (with local fallback)
+_broker_env = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
+CELERY_BROKER_URL = _fix_redis_host(_broker_env)
 print(f"DEBUG: CELERY_BROKER_URL configured as: {CELERY_BROKER_URL}")
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+_backend_env = os.getenv('CELERY_RESULT_BACKEND', _broker_env)
+CELERY_RESULT_BACKEND = _fix_redis_host(_backend_env)
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 # Prevent memory leaks by restarting workers periodically
@@ -173,15 +196,35 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/1'),
+        "LOCATION": _fix_redis_host(os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/1')),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
     }
 }
 
-# CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS Settings - Updated for Vercel deployment
+CORS_ALLOWED_ORIGINS = [
+    "https://hydrasnipe.it",
+    "https://www.hydrasnipe.it", 
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://administered-favourites-legislature-docs.trycloudflare.com",  # Current Cloudflare tunnel
+    "https://accommodation-counties-coding-kenneth.trycloudflare.com",  # Current Cloudflare tunnel
+]
+
+# Allow all Vercel preview deployments and Cloudflare tunnels
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",  # All Vercel deployments
+    r"^https://.*\.trycloudflare\.com$",  # All Cloudflare tunnels
+]
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = False
+
+# Fallback for development - allow all origins if DEBUG=True
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
 
 # LOGging Configuration
 LOGGING = {

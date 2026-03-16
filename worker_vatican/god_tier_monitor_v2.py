@@ -609,11 +609,24 @@ class GodTierVaticanMonitorV2:
                 # If timetable is empty but status was 200, it might be truly sold out
                 # or the response structure changed.
                 
+                # Check for error or invalid response
+                if 'error' in resp_data:
+                    logger.warning(f"⚠️ API Error for {meta['name']}: {resp_data.get('error')}")
+                    continue
+
                 available_slots = [
                     {"time": t['time'], "availability": t['availability']}
                     for t in timetable
                     if t.get('availability') not in ['SOLD_OUT', 'NOT_ALLOWED']
                 ]
+                
+                # If we found no slots, double check if it's because of strict filtering
+                # Sometimes availability might be 'LOW_AVAILABILITY' or other statuses
+                if not available_slots and timetable:
+                    # Log what statuses we did see to help debug
+                    statuses = set(t.get('availability') for t in timetable)
+                    if any(s not in ['SOLD_OUT', 'NOT_ALLOWED'] for s in statuses):
+                        logger.warning(f"⚠️ Potential missed slots! Statuses seen: {statuses}")
                 
                 if available_slots:
                     results.append({

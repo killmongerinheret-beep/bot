@@ -13,19 +13,13 @@ from .models import MonitorTask, CheckResult, Agency, Proxy, SiteCredential
 # 1. Clean Imports
 logger = logging.getLogger(__name__)
 
-# VaticanPro and ColosseumPro are legacy classes that may not exist
+# VaticanPro is legacy class that may not exist
 VaticanPro = None
-ColosseumPro = None
 
 try:
     from worker_vatican.monitor import VaticanPro
 except ImportError:
     logger.warning("⚠️ worker_vatican.monitor.VaticanPro not found (legacy module)")
-
-try:
-    from worker_colosseum.monitor import ColosseumPro
-except ImportError:
-    logger.warning("⚠️ worker_colosseum.monitor.ColosseumPro not found (legacy module)")
 
 try:
     from worker_vatican.hydra_monitor import HydraBot
@@ -57,14 +51,10 @@ def get_proxy_str(site='vatican'):
         models.Q(cooldown_until__isnull=True) | models.Q(cooldown_until__lte=now)
     )
     
-    if site == 'colosseum':
-        # Colosseum needs high-quality IPs (ISP/Resid)
-        proxy_obj = valid_proxies.filter(ip_port__icontains='oxylabs').order_by('?').first()
-    else:
-        # Vatican is less strict, but still prefer Oxylabs
-        proxy_obj = valid_proxies.filter(ip_port__icontains='oxylabs').order_by('?').first()
-        if not proxy_obj:
-            proxy_obj = valid_proxies.order_by('?').first()
+    # Vatican prefers Oxylabs but can use any proxy
+    proxy_obj = valid_proxies.filter(ip_port__icontains='oxylabs').order_by('?').first()
+    if not proxy_obj:
+        proxy_obj = valid_proxies.order_by('?').first()
 
     if not proxy_obj:
         # If ALL proxies are on cooldown, pick the one with the earliest cooldown expiry
@@ -121,32 +111,6 @@ def report_proxy_status(proxy_obj, success=True):
             
         proxy_obj.save()
 
-# --- GOD TIER: SESSION MANAGERS ---
-@shared_task(name="refresh_colosseum_session", queue="colosseum")
-def refresh_colosseum_session():
-    """Runs periodically to pre-warm Colosseum cookies and store in Redis"""
-    logger.info("🔄 GOD TIER: Refreshing Colosseum Session...")
-    try:
-        proxy_str, _ = get_proxy_str('colosseum')
-        monitor = ColosseumPro(proxy=proxy_str)
-        
-        # 1. Try Direct API (Bypass Queue)
-        # Using a distant date to check access (May 2026)
-        monitor.get_availability(2026, 5)
-        
-        # 2. If API set cookies (e.g. incap/visid), cache them
-        if monitor.session.cookies:
-            cookies = monitor.session.cookies.get_dict()
-            cache.set('colosseum_cookies', cookies, timeout=600)
-            logger.info(f"✅ Colosseum Session Cached! ({len(cookies)} cookies)")
-            return "Session Refreshed"
-        else:
-             # Even if no cookies, if API worked (no exception), we are good. 
-             # But we can't cache 'nothing', so monitor will default to Direct API anyway.
-             return "Verified API Access (No Cookies)"
-    except Exception as e:
-        logger.error(f"Failed to refresh Colosseum session: {e}")
-    return "Failed"
 
 @shared_task(name="refresh_vatican_session", queue="vatican")
 def refresh_vatican_session():
@@ -268,6 +232,13 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
                             if 'palazzo' in t_lower and 'musei' in r_name:
                                 continue
                             
+                            # ✅ MONDAY FIX: Exclude special event tickets (Monday-only programs)
+                            # These have different schedules and should never match standard tickets
+                            monday_special_keywords = ['quaresima', 'didattiche - laboratorio', 'pellegrinaggi']
+                            if any(x in r_name for x in monday_special_keywords):
+                                logger.info(f"⏭️ Skipping Monday-special ticket: {r_name}")
+                                continue
+                            
                             # Avoid lunch/special tickets for standard admission
                             if ticket_type == 0 and any(x in r_name for x in ['lunch', 'pranzo', 'pellegrinaggi']):
                                 continue
@@ -284,6 +255,12 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
                     if not exact_match and ticket_type == 0:
                         for item in resolved_ids:
                             r_name = item.get('name', '').lower()
+                            
+                            # ✅ MONDAY FIX: Skip Monday-special tickets in fallback too
+                            monday_special_keywords = ['quaresima', 'didattiche - laboratorio', 'pellegrinaggi']
+                            if any(x in r_name for x in monday_special_keywords):
+                                continue
+                            
                             # Look for standard admission tickets
                             # ✅ IMPROVED: Also check for "aree museali" and "ingresso" patterns
                             if any(x in r_name for x in ['biglietti', 'ingresso', 'aree museali', 'museali']):
@@ -324,7 +301,8 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
                     return {
                         'status': 'available' if slots else 'sold_out',
                         'slots': slots,
-                        'language_detected': detected_lang
+                        'language_detected': detected_lang,
+                        'checked_id': fresh_id
                     }
                     
                 except Exception as e:
@@ -351,8 +329,8 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
             task.last_status = status
             
             # ✅ STATE CHANGE DETECTION using Redis
-            # Key format: ticket_state:{task_id}:{ticket_id}:{date}
-            state_key = f"ticket_state:{task.id}:{ticket_id}:{date}"
+            # Key format: ticket_state:{task_id}:{date} (STABLE - no ticket_id to avoid cache misses)
+            state_key = f"ticket_state:{task.id}:{date}"
             previous_state = cache.get(state_key)
             
             # 🛡️ DEFENSIVE: Handle Redis Bytes vs String mismatch
@@ -378,6 +356,7 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
                 details={
                     'date': date,
                     'ticket_id': ticket_id,
+                'effective_ticket_id': check_result.get('checked_id'),
                     'ticket_name': ticket_name,
                     'language': language or detected_lang,
                     'slots': slots,
@@ -406,27 +385,28 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
             
             task.save()
             
-            # ✅ SMART NOTIFICATION: Only alert on state CHANGE (closed → open)
-            should_alert = status_changed_to_open and not is_first_check
+            # ✅ FIXED: Never alert on first check - just establish baseline
+            # Only alert on actual state changes (closed → open)
+            should_alert = False
             
-            # 🛡️ SPAM GUARD: Cooldown key (Double Protection)
-            # Prevent sending same alert for same ticket/date within 60 minutes
-            # regardless of state flips (e.g. flaky connection)
-            alert_cooldown_key = f"alert_cooldown:{task.id}:{ticket_id}:{date}"
-            if should_alert and cache.get(alert_cooldown_key):
-                 logger.info(f"⏳ SUPPRESSED ALERT: Cooldown active for {ticket_name}")
-                 should_alert = False
-
-            if is_first_check and is_now_available:
-                # First check found tickets - log but don't alert (user said so)
-                logger.info(f"ℹ️ First check: {ticket_name} already available - NOT alerting (initial state)")
-            elif status_changed_to_open and not is_first_check:
-                if should_alert:
+            # 🛡️ SPAM GUARD: Cooldown key (STABLE - no ticket_id)
+            # Prevent sending same alert for same task/date within 60 minutes
+            alert_cooldown_key = f"alert_cooldown:{task.id}:{date}"
+            
+            if is_first_check:
+                # First check - establish baseline, never alert
+                logger.info(f"ℹ️ First check: {ticket_name} - establishing baseline (status: {new_state})")
+                should_alert = False
+            elif status_changed_to_open:
+                # State changed from closed to open - check cooldown
+                if cache.get(alert_cooldown_key):
+                    logger.info(f"⏳ SUPPRESSED ALERT: Cooldown active for {ticket_name}")
+                    should_alert = False
+                else:
                     logger.info(f"🔔 STATE CHANGE: {ticket_name} went from CLOSED → OPEN! Sending Alert.")
+                    should_alert = True
                     # Set Cooldown
                     cache.set(alert_cooldown_key, "sent", timeout=3600) # 1 Hour Silence
-                else:
-                    logger.info(f"🔕 STATE CHANGE detected but Alert Suppressed (Cooldown/Muted)")
             elif not is_now_available:
                 logger.info(f"🔒 {ticket_name} is CLOSED ({len(slots)} slots)")
             else:
@@ -435,14 +415,21 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
             # Send Telegram notification only if should_alert passed all checks
             if should_alert and task.notification_mode != 'silent':
                 try:
-                    chat_id = task.agency.telegram_chat_id
-                    if chat_id:
-                        from .notification_utils import format_vatican_notification
-                        
+                    from .notification_utils import format_vatican_notification, send_telegram_signal
+                    from .models import TelegramGroup
+                    
+                    # Get all approved groups for this agency
+                    approved_groups = TelegramGroup.objects.filter(
+                        agency=task.agency,
+                        status='approved',
+                        notification_enabled=True
+                    )
+                    
+                    if approved_groups.exists():
                         message = format_vatican_notification(
                             date=date,
                             ticket_name=ticket_name,
-                            ticket_id=str(ticket_id),
+                            ticket_id=str(check_result.get('checked_id') or ticket_id),
                             slots=slots,
                             preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
                             language=detected_lang or language,
@@ -450,8 +437,32 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
                             check_method="smart"
                         )
                         
-                        send_telegram_signal(chat_id, message)
-                        logger.info(f"✅ TELEGRAM ALERT sent to {task.agency.name}")
+                        # Send to all approved groups
+                        sent_count = 0
+                        for group in approved_groups:
+                            if send_telegram_signal(group.chat_id, message):
+                                sent_count += 1
+                        
+                        logger.info(f"✅ TELEGRAM ALERT sent to {sent_count}/{approved_groups.count()} groups for {task.agency.name}")
+                    
+                    # Fallback: Also send to legacy telegram_chat_id if set
+                    elif task.agency.telegram_chat_id:
+                        message = format_vatican_notification(
+                            date=date,
+                            ticket_name=ticket_name,
+                            ticket_id=str(check_result.get('checked_id') or ticket_id),
+                            slots=slots,
+                            preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
+                            language=detected_lang or language,
+                            visitors=task.visitors,
+                            check_method="smart"
+                        )
+                        
+                        send_telegram_signal(task.agency.telegram_chat_id, message)
+                        logger.info(f"✅ TELEGRAM ALERT sent to legacy chat_id for {task.agency.name}")
+                    else:
+                        logger.warning(f"⚠️ No approved Telegram groups found for agency {task.agency.name}")
+                        
                 except Exception as e:
                     logger.error(f"Notification failed for task {task.id}: {e}")
         
@@ -465,80 +476,179 @@ def run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, 
         return f"Failed: {str(e)}"
 
 
-# ✅ NEW: GOD-TIER HEADLESS MONITOR (Ultra-Fast HTTP Mode)
+# ✅ SEARCH API COMPLIANT MONITOR (Vatican Bot Rules Compliant)
 @shared_task(name="run_god_tier_vatican_monitor", queue="vatican")
 def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors=2, use_browser_fallback=True):
     """
-    🚀 ULTRA-FAST: Uses headless HTTP mode (curl_cffi) for 10x speed improvement.
-    Only falls back to browser if session is invalid and refresh fails.
+    🚀 VATICAN BOT RULES COMPLIANT: Uses Search API + timeavail API as mandated.
+    
+    CRITICAL: This function MUST follow Vatican Bot Rules:
+    1. ALWAYS use Search API to get fresh ticket IDs
+    2. NEVER use hardcoded/stale ticket IDs
+    3. Use timeavail API with fresh IDs and JSESSIONID
     
     Args:
         date: DD/MM/YYYY format
-        ticket_id: Vatican ticket ID (e.g., '929041748')
-        ticket_name: Human-readable name
+        ticket_id: Vatican ticket ID (IGNORED - will resolve fresh ID)
+        ticket_name: Human-readable name for matching
         language: Language code (ENG/ITA/FRA/DEU/SPA) or None for standard tickets
         task_ids: List of MonitorTask IDs interested in this combo
-        use_browser_fallback: If True, uses HydraBot when headless fails
+        use_browser_fallback: If True, uses HydraBot when Search API fails
     """
-    import asyncio
-    
     try:
-        logger.info(f"🚀 GOD-TIER CHECK: {date} | Ticket: {ticket_name} | Lang: {language} | Agencies: {len(task_ids)}")
+        logger.info(f"🚀 SEARCH API CHECK: {date} | Ticket: {ticket_name} | Lang: {language} | Agencies: {len(task_ids)}")
         
         ticket_type = 1 if language else 0
-        languages = [language] if language else ["ITA"]
         
-        # Initialize God-Tier Monitor
-        monitor = GodTierVaticanMonitor()
-        
-        # Run headless check
-        async def headless_check():
-            return await monitor.check_availability_headless(
-                date_str=date,
+        # ✅ STEP 1: Use Search API to get fresh ticket IDs (MANDATORY)
+        try:
+            from worker_vatican.search_api_monitor import VaticanSearchAPIMonitor
+            
+            # Get proxy for this check
+            proxy_str, proxy_obj = get_proxy_str('vatican')
+            
+            # Initialize Search API Monitor
+            monitor = VaticanSearchAPIMonitor(proxy_str=proxy_str)
+            
+            # Resolve fresh ticket IDs using Search API
+            fresh_tickets = monitor.resolve_ticket_ids(
+                target_date=date,
+                visitors=visitors,
                 ticket_type=ticket_type,
-                languages=languages,
-                visitors=visitors
+                language=language
             )
+            
+            if not fresh_tickets:
+                logger.error(f"❌ Search API returned no tickets for {date}")
+                if use_browser_fallback:
+                    logger.info("🔄 Falling back to browser mode")
+                    return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
+                else:
+                    report_proxy_status(proxy_obj, success=False)
+                    return f"Failed: No tickets found via Search API"
+            
+            # ✅ STEP 2: Match ticket by name (3-tier strategy from Vatican Bot Rules)
+            fresh_id = None
+            
+            # Strategy 1: Exact substring match
+            for ticket in fresh_tickets:
+                t_name_lower = ticket['name'].lower()
+                target_name_lower = ticket_name.lower()
+                
+                if target_name_lower in t_name_lower or t_name_lower in target_name_lower:
+                    # Skip lunch/special tickets for standard admission
+                    if ticket_type == 0 and any(x in t_name_lower for x in ['lunch', 'pranzo', 'pellegrinaggi']):
+                        continue
+                    fresh_id = ticket['id']
+                    logger.info(f"✅ Exact Match: '{ticket_name}' -> ID {fresh_id}")
+                    break
+            
+            # Strategy 2: Keyword matching
+            if not fresh_id:
+                keywords = []
+                t_lower = ticket_name.lower()
+                
+                if 'musei' in t_lower:
+                    keywords.extend(['musei', 'vaticani', 'aree', 'museali'])
+                elif 'palazzo' in t_lower:
+                    keywords.extend(['palazzo', 'papale'])
+                elif 'specola' in t_lower:
+                    keywords.extend(['specola', 'vaticana'])
+                
+                if 'biglietti' in t_lower or 'admission' in t_lower or 'ingresso' in t_lower:
+                    keywords.extend(['biglietti', 'ingresso'])
+                if 'visita' in t_lower or 'guided' in t_lower or 'tour' in t_lower:
+                    keywords.extend(['visita', 'guidata'])
+                
+                best_match = None
+                best_score = 0
+                
+                for ticket in fresh_tickets:
+                    t_name_lower = ticket['name'].lower()
+                    score = sum(1 for kw in keywords if kw in t_name_lower)
+                    
+                    # Venue exclusions
+                    if 'musei' in t_lower and 'palazzo' in t_name_lower:
+                        continue
+                    if 'palazzo' in t_lower and 'musei' in t_name_lower:
+                        continue
+                    
+                    if ticket_type == 0 and any(x in t_name_lower for x in ['lunch', 'pranzo', 'pellegrinaggi']):
+                        continue
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_match = ticket['id']
+                
+                if best_match and best_score >= 2:
+                    fresh_id = best_match
+                    logger.info(f"✅ Keyword Match: '{ticket_name}' -> ID {fresh_id} (score: {best_score})")
+            
+            # Strategy 3: Fallback to first appropriate ticket
+            if not fresh_id and ticket_type == 0:
+                for ticket in fresh_tickets:
+                    t_name_lower = ticket['name'].lower()
+                    if any(x in t_name_lower for x in ['biglietti', 'ingresso', 'aree museali', 'museali']):
+                        if not any(x in t_name_lower for x in ['lunch', 'pranzo', 'pellegrinaggi', 'gruppi', 'palazzo', 'specola']):
+                            fresh_id = ticket['id']
+                            logger.info(f"✅ Fallback Match: Using first standard ticket -> ID {fresh_id}")
+                            break
+            
+            if not fresh_id:
+                candidate_names = [t['name'] for t in fresh_tickets]
+                logger.error(f"❌ No name match for '{ticket_name}'. Candidates: {candidate_names}")
+                if use_browser_fallback:
+                    logger.info("🔄 Falling back to browser mode")
+                    return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
+                else:
+                    return f"Failed: Could not match ticket name"
+            
+            # ✅ STEP 3: Check availability using timeavail API with fresh ID
+            success, available_slots = monitor.check_availability(
+                ticket_id=fresh_id,
+                target_date=date,
+                visitors=visitors,
+                language=language
+            )
+            
+            if success:
+                report_proxy_status(proxy_obj, success=True)
+                unique_slots = available_slots  # Already processed by Search API monitor
+                status = 'available' if unique_slots else 'sold_out'
+                logger.info(f"✅ Search API Check Complete: {ticket_name} - Found {len(unique_slots)} slots")
+            else:
+                logger.error(f"❌ Timeavail API failed for ticket {fresh_id}")
+                report_proxy_status(proxy_obj, success=False)
+                if use_browser_fallback:
+                    logger.info("🔄 Falling back to browser mode")
+                    return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
+                else:
+                    return f"Failed: Timeavail API error"
+            
+        except ImportError:
+            logger.error("❌ Search API Monitor not available, falling back to browser mode")
+            if use_browser_fallback:
+                return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
+            else:
+                return f"Failed: Search API Monitor not available"
+        except Exception as e:
+            logger.error(f"❌ Search API check failed: {e}")
+            if use_browser_fallback:
+                logger.info("🔄 Falling back to browser mode due to error")
+                return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
+            else:
+                return f"Failed: {str(e)}"
         
-        results = asyncio.run(headless_check())
         
-        # Filter results for the specific ticket we want
-        matching_results = [
-            r for r in results 
-            if ticket_id in r.get('ticket_id', '') or ticket_name.lower() in r.get('ticket_name', '').lower()
-        ]
-        
-        # If no results and browser fallback is enabled, try browser mode
-        if not matching_results and use_browser_fallback:
-            logger.warning(f"⚠️ Headless check returned no results, falling back to browser mode")
-            # Delegate to the existing smart monitor which uses HydraBot
-            return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
-        
-        # Extract slots from results
-        all_slots = []
-        for result in matching_results:
-            all_slots.extend(result.get('slots', []))
-        
-        # Deduplicate slots by time
-        seen_times = set()
-        unique_slots = []
-        for slot in all_slots:
-            time_key = slot.get('time', slot) if isinstance(slot, dict) else slot
-            if time_key not in seen_times:
-                seen_times.add(time_key)
-                unique_slots.append(slot)
-        
-        status = 'available' if unique_slots else 'sold_out'
-        
-        # ✅ NOTIFY ALL INTERESTED AGENCIES (same logic as smart monitor)
+        # ✅ NOTIFY ALL INTERESTED AGENCIES
         tasks = MonitorTask.objects.filter(id__in=task_ids)
         
         for task in tasks:
             task.last_checked = timezone.now()
             task.last_status = status
             
-            # State change detection
-            state_key = f"ticket_state:{task.id}:{ticket_id}:{date}"
+            # State change detection (STABLE KEY - no ticket_id)
+            state_key = f"ticket_state:{task.id}:{date}"
             previous_state = cache.get(state_key)
             
             if isinstance(previous_state, bytes):
@@ -558,14 +668,17 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
                 status=status,
                 details={
                     'date': date,
-                    'ticket_id': ticket_id,
+                    'ticket_id': fresh_id,  # ✅ Use fresh ID
+                    'effective_ticket_id': fresh_id,  # ✅ Track the actual ID used
+                    'original_ticket_id': ticket_id,  # ✅ Keep original for reference
                     'ticket_name': ticket_name,
                     'language': language,
                     'slots': unique_slots,
                     'state_changed': status_changed_to_open,
                     'previous_state': previous_state,
                     'is_first_check': is_first_check,
-                    'check_method': 'god_tier_headless'
+                    'check_method': 'search_api_compliant',  # ✅ Updated method name
+                    'checked_at': str(timezone.now())
                 }
             )
             
@@ -574,7 +687,7 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
                 summary_data = {
                     "updates": {
                         date: [{
-                            'id': ticket_id,
+                            'id': fresh_id,  # ✅ Use fresh ID
                             'name': ticket_name,
                             'slots': unique_slots
                         }]
@@ -587,63 +700,119 @@ def run_god_tier_vatican_monitor(date, ticket_id, ticket_name, language, task_id
             
             task.save()
             
-            # ✅ IMPROVED: Smart notification logic with proper cooldown handling
+            # ✅ FIXED: Smart notification logic with stable cache keys
             should_alert = False
-            alert_cooldown_key = f"alert_cooldown:{task.id}:{ticket_id}:{date}"
+            alert_cooldown_key = f"alert_cooldown:{task.id}:{date}"  # ✅ STABLE KEY
+            last_slot_count_key = f"last_slot_count:{task.id}:{date}"  # ✅ STABLE KEY
             
-            if is_first_check and is_now_available:
-                logger.info(f"ℹ️ First check: {ticket_name} already available - NOT alerting (initial state)")
-            elif status_changed_to_open and not is_first_check:
-                # State changed from closed to open - this is what we want to alert on!
+            # Get previous slot count
+            try:
+                last_slot_count = int(cache.get(last_slot_count_key) or 0)
+            except:
+                last_slot_count = 0
+            
+            current_slot_count = len(unique_slots)
+            
+            # Check for significant improvement (e.g. from <5 to >10 slots)
+            significant_improvement = False
+            if last_slot_count < 5 and current_slot_count >= 10:
+                significant_improvement = True
+                logger.info(f"📈 SIGNIFICANT IMPROVEMENT: Slots jumped from {last_slot_count} to {current_slot_count}!")
+
+            # ✅ FIXED: Never alert on first check - just establish baseline
+            if is_first_check:
+                # First check - establish baseline, never alert
+                logger.info(f"ℹ️ First check: {ticket_name} - establishing baseline (status: {new_state})")
+                should_alert = False
+            elif status_changed_to_open:
+                # State changed from closed to open - check cooldown
                 if cache.get(alert_cooldown_key):
                     logger.info(f"⏳ SUPPRESSED ALERT: Cooldown active for {ticket_name}")
                     should_alert = False
                 else:
                     logger.info(f"🔔 STATE CHANGE: {ticket_name} went from CLOSED → OPEN!")
                     should_alert = True
-                    # Set cooldown immediately to prevent duplicate alerts
-                    cache.set(alert_cooldown_key, "sent", timeout=3600)
+            elif is_now_available and significant_improvement and not cache.get(alert_cooldown_key):
+                # Already open, but significantly better availability (and no cooldown)
+                logger.info(f"🔔 AVAILABILITY SPIKE: {ticket_name} has much better availability!")
+                should_alert = True
             elif not is_now_available:
                 logger.info(f"🔒 {ticket_name} is CLOSED ({len(unique_slots)} slots)")
             else:
                 logger.info(f"ℹ️ {ticket_name} still AVAILABLE - no alert needed")
             
-            # ✅ Send Telegram notification if should_alert is True
+            # Update cache
+            if should_alert:
+                 # Set cooldown immediately to prevent duplicate alerts
+                 cache.set(alert_cooldown_key, "sent", timeout=3600)  # 1 hour cooldown
+            
+            cache.set(last_slot_count_key, current_slot_count, timeout=86400) # Keep count for 24h
+            
+            # ✅ FIXED: Send notification only if should_alert is True
             if should_alert and task.notification_mode != 'silent':
                 try:
-                    chat_id = task.agency.telegram_chat_id
-                    if chat_id:
-                        from .notification_utils import format_vatican_notification
-                        
+                    from .notification_utils import format_vatican_notification, send_telegram_signal
+                    from .models import TelegramGroup
+                    
+                    # Get all approved groups for this agency
+                    approved_groups = TelegramGroup.objects.filter(
+                        agency=task.agency,
+                        status='approved',
+                        notification_enabled=True
+                    )
+                    
+                    if approved_groups.exists():
+                        # Send availability alert
                         message = format_vatican_notification(
                             date=date,
                             ticket_name=ticket_name,
-                            ticket_id=str(ticket_id),
+                            ticket_id=str(fresh_id),  # ✅ Use fresh ID
                             slots=unique_slots,
                             preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
                             language=language,
                             visitors=task.visitors,
-                            check_method="god-tier"
+                            check_method="search-api"  # ✅ Updated method name
                         )
                         
-                        send_telegram_signal(chat_id, message)
-                        logger.info(f"✅ TELEGRAM ALERT sent to {task.agency.name}")
+                        # Send to all approved groups
+                        sent_count = 0
+                        for group in approved_groups:
+                            if send_telegram_signal(group.chat_id, message):
+                                sent_count += 1
+                        
+                        logger.info(f"✅ TELEGRAM NOTIFICATION sent to {sent_count}/{approved_groups.count()} groups for {task.agency.name}")
+                    
+                    # Fallback: Also send to legacy telegram_chat_id if set and no groups
+                    elif task.agency.telegram_chat_id:
+                        message = format_vatican_notification(
+                            date=date,
+                            ticket_name=ticket_name,
+                            ticket_id=str(fresh_id),  # ✅ Use fresh ID
+                            slots=unique_slots,
+                            preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
+                            language=language,
+                            visitors=task.visitors,
+                            check_method="search-api"  # ✅ Updated method name
+                        )
+                        send_telegram_signal(task.agency.telegram_chat_id, message)
+                        logger.info(f"✅ TELEGRAM NOTIFICATION sent to legacy chat_id for {task.agency.name}")
                     else:
-                        logger.warning(f"⚠️ No telegram_chat_id for agency {task.agency.name}")
+                        logger.warning(f"⚠️ No approved Telegram groups found for agency {task.agency.name}")
+                        
                 except Exception as e:
                     logger.error(f"❌ Notification failed: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
         
-        logger.info(f"✅ God-Tier check complete: {ticket_name} - Found {len(unique_slots)} slots")
-        return f"God-Tier Checked {ticket_name} - Found {len(unique_slots)} slots"
+        logger.info(f"✅ Search API check complete: {ticket_name} - Found {len(unique_slots)} slots")
+        return f"Search API Checked {ticket_name} - Found {len(unique_slots)} slots"
         
     except Exception as e:
-        logger.error(f"God-Tier monitor failed: {e}")
+        logger.error(f"Search API monitor failed: {e}")
         # Fallback to browser mode on error
         if use_browser_fallback:
             logger.info("Falling back to browser mode due to error")
-            return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids)
+            return run_smart_vatican_monitor(date, ticket_id, ticket_name, language, task_ids, visitors)
         return f"Failed: {str(e)}"
 
 
@@ -941,57 +1110,6 @@ def send_telegram_signal(chat_id, message):
     except Exception as e:
         logger.error(f"Failed to send Telegram signal: {e}")
 
-@shared_task(name="run_colosseum_monitor", queue="colosseum")
-def run_colosseum_monitor(task_id):
-    try:
-        task = MonitorTask.objects.get(id=task_id)
-        agency = task.agency
-        
-        proxy_str, proxy_obj = get_proxy_str('colosseum')
-        
-        monitor = ColosseumPro(lang=task.language, proxy=proxy_str)
-        if task.area_name and len(task.area_name) == 36:
-            monitor.event_guid = task.area_name
-        
-        logger.info(f"Running Colosseum Pro check for Task {task_id} using proxy {proxy_obj}")
-        
-        results = monitor.check_dates(task.dates)
-        
-        prev_status = task.last_status
-        status = 'available' if results else 'sold_out'
-        CheckResult.objects.create(
-            task=task,
-            status=status,
-            details=results
-        )
-        
-        task.last_checked = timezone.now()
-        task.last_status = status
-        task.last_result_summary = json.dumps(results)
-        task.save()
-        
-        # Report Success
-        report_proxy_status(proxy_obj, success=True)
-        
-        if (status == 'available' and prev_status != 'available') or (task.notification_mode == 'any_change' and status != prev_status):
-            if task.notification_mode != 'silent':
-                send_telegram_signal(agency.telegram_chat_id, f"🏛️ COLOSSEUM ALERT: {task.area_name}\n\n" + json.dumps(results, indent=2))
-        
-        return f"Colosseum check completed for task {task_id}. Status: {status}"
-        
-    except Exception as e:
-        # Report Failure
-        report_proxy_status(proxy_obj, success=False)
-        
-        logger.error(f"Error in run_colosseum_monitor: {e}")
-        try:
-            task = MonitorTask.objects.get(id=task_id)
-            task.last_status = 'error'
-            task.last_result_summary = f"Engine Error: {str(e)}"
-            task.save()
-        except:
-            pass
-        return str(e)
 
 @shared_task(name="resolve_and_check_task", queue="vatican")
 def resolve_and_check_task(task_id):
@@ -1170,8 +1288,6 @@ def orchestrate_all_tasks():
     # Tasks that need immediate ID resolution (blocking)
     tasks_needing_id = []
     
-    colosseum_count = 0
-    
     for task in active_tasks:
         # User defined interval or default 120s (Optimized)
         interval_seconds = getattr(task, 'check_interval', 120)
@@ -1207,11 +1323,6 @@ def orchestrate_all_tasks():
                             }
                         
                         smart_groups[key]['task_ids'].append(task.id)
-                        
-            elif task.site == 'colosseum':
-                # Keep existing per-task logic for Colosseum (It is lightweight API)
-                run_colosseum_monitor.apply_async(args=[task.id], countdown=random.randint(5, 30))
-                colosseum_count += 1
     
     # ✅ RESOLVE IDs FOR TASKS WITHOUT ticket_id (REQUIRED - NO SKIPPING)
     # These tasks MUST get a ticket_id before they can be checked
@@ -1271,9 +1382,9 @@ def orchestrate_all_tasks():
         logger.info(f"📊 Smart Group: {date}/{ticket_id}/{language}/{visitors}v → {len(task_ids)} agencies")
 
     total_checks = smart_count + len(tasks_needing_id)
-    logger.info(f"✅ Orchestration Complete: {smart_count} smart checks + {len(tasks_needing_id)} ID resolutions (REQUIRED) + {colosseum_count} Colosseum")
+    logger.info(f"✅ Orchestration Complete: {smart_count} smart checks + {len(tasks_needing_id)} ID resolutions (REQUIRED)")
     
-    return f"Queued {smart_count} smart checks (multi-agency), {len(tasks_needing_id)} ID resolutions (REQUIRED), {colosseum_count} Colosseum tasks."
+    return f"Queued {smart_count} smart checks (multi-agency), {len(tasks_needing_id)} ID resolutions (REQUIRED)."
 @shared_task(name="cleanup_old_results")
 def cleanup_old_results():
     """
@@ -1398,7 +1509,6 @@ def cleanup_backed_up_queues():
     
     Monitors:
     - vatican queue (should be < 100 tasks)
-    - colosseum queue (should be < 50 tasks)
     - celery queue (should be < 200 tasks)
     
     If queue exceeds threshold, purges old tasks.
@@ -1414,7 +1524,6 @@ def cleanup_backed_up_queues():
         # Define queue thresholds
         queue_thresholds = {
             'vatican': 100,
-            'colosseum': 50,
             'celery': 200
         }
         
@@ -1443,4 +1552,53 @@ def cleanup_backed_up_queues():
             
     except Exception as e:
         logger.error(f"Error in cleanup_backed_up_queues: {e}")
+        return f"Failed: {str(e)}"
+
+@shared_task(name="send_daily_summary")
+def send_daily_summary():
+    """
+    Sends a daily summary report to all agencies with active monitors.
+    Scheduled to run every morning.
+    """
+    try:
+        from .notification_utils import send_telegram_signal
+        
+        # Group active tasks by agency
+        active_tasks = MonitorTask.objects.filter(is_active=True)
+        agencies = {}
+        
+        for task in active_tasks:
+            if task.agency_id not in agencies:
+                agencies[task.agency_id] = {
+                    'agency': task.agency,
+                    'tasks': []
+                }
+            agencies[task.agency_id]['tasks'].append(task)
+            
+        logger.info(f"📊 Generating daily summary for {len(agencies)} agencies")
+        
+        for agency_id, data in agencies.items():
+            agency = data['agency']
+            tasks = data['tasks']
+            
+            if not agency.telegram_chat_id:
+                continue
+                
+            # Build report
+            vatican_count = sum(1 for t in tasks if t.site == 'vatican')
+            
+            message = f"📊 *DAILY MONITORING REPORT*\n\n"
+            message += f"🤖 *Bot Status:* Online & Checking\n"
+            message += f"📋 *Active Monitors:* {len(tasks)}\n"
+            message += f"   • Vatican: {vatican_count}\n\n"
+            
+            message += f"💡 *Tip:* Use /status to see real-time details or /add to create new monitors."
+            
+            send_telegram_signal(agency.telegram_chat_id, message)
+            logger.info(f"✅ Daily summary sent to {agency.name}")
+            
+        return f"Sent summaries to {len(agencies)} agencies"
+        
+    except Exception as e:
+        logger.error(f"Failed to send daily summary: {e}")
         return f"Failed: {str(e)}"

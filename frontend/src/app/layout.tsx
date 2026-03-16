@@ -7,7 +7,7 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "HYDRA | Enterprise Ticket Monitoring",
-  description: "The automated inventory system for Vatican Museums and Colosseum. We sniff out availability and snipe tickets instantly.",
+  description: "The automated inventory system for Vatican Museums. We sniff out availability and snipe tickets instantly.",
 };
 
 export default function RootLayout({

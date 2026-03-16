@@ -14,23 +14,16 @@ interface TaskModalProps {
 
 export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: TaskModalProps) {
     const [formData, setFormData] = useState({
-        site: 'vatican' as 'vatican' | 'colosseum',
-        area_name: 'MV-Biglietti',
-        ticket_id: '',
-        tier: 'monitor' as 'monitor' | 'sniper',
+        site: 'vatican' as 'vatican',
         dates: [] as string[],
         preferred_times: '',
-        visitors: 2,
-        notification_mode: 'any_change',
-        language: ''  // Empty string, will be set based on ticket type
+        visitors: 2
     });
     const [newDate, setNewDate] = useState('');
     const [loading, setLoading] = useState(false);
 
     // Ticket selection state
     const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
-    const [selectedTicketName, setSelectedTicketName] = useState<string | null>(null);
-    const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
 
     if (!isOpen) return null;
 
@@ -45,19 +38,6 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
         setFormData({ ...formData, dates: formData.dates.filter((d: string) => d !== dateToRemove) });
     };
 
-    const areaOptions = {
-        vatican: [
-            { label: 'Standard Entry (Biglietti)', value: 'MV-Biglietti' },
-            { label: 'Guided Tours (MV-Tour)', value: 'MV-Tour' },
-            { label: 'Prime Experience', value: 'MV-Prime' },
-        ],
-        colosseum: [
-            { label: 'Parco 24h (Standard)', value: 'ce1af0d8-41e9-4e97-88cf-938e52ec8dbb' },
-            { label: 'Full Experience (Attic)', value: 'fbe87f91-381c-43f5-9388-727e4e11698e' },
-            { label: 'Underground/Arena', value: '95806659-399a-42f0-97eb-bd9dcc75d1f0' },
-        ]
-    };
-
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!agencyId) {
@@ -68,25 +48,38 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
             alert('Please add at least one date.');
             return;
         }
+        if (!selectedTicketId) {
+            alert('Please select a ticket type.');
+            return;
+        }
+        
         setLoading(true);
         try {
-            // Determine ticket type based on area_name
-            const isGuidedTour = formData.area_name === 'MV-Tour' || selectedTicketId?.startsWith('guided_');
-            
-            // For standard tickets, language should be null/undefined
-            // For guided tours, use selectedLanguage or formData.language
-            let languageValue = null;
-            if (isGuidedTour) {
-                languageValue = selectedLanguage || formData.language || null;
+            // Get ticket details from selected ticket
+            const selectedTicket = vaticanTickets.find((t: any) => t.id === selectedTicketId);
+            if (!selectedTicket) {
+                throw new Error('Invalid ticket selection');
             }
             
+            const ticketType = selectedTicket.ticket_type;
+            const languageValue = selectedTicket.language;
+            const ticketNameValue = selectedTicket.name.includes('Standard') 
+                ? 'Musei Vaticani - Biglietti d\'ingresso'
+                : 'Musei Vaticani - Visita Guidata';
+            const areaName = selectedTicket.tag;
+            
             const payload = {
-                ...formData,
-                agency: agencyId,
+                site: formData.site,
+                area_name: areaName,
+                dates: formData.dates,
                 preferred_times: formData.preferred_times.split(',').map((t: string) => t.trim()).filter(Boolean),
-                ticket_id: selectedTicketId || undefined,
-                ticket_name: selectedTicketName || undefined,
-                language: languageValue || undefined,  // undefined will be omitted from JSON
+                visitors: formData.visitors,
+                agency: agencyId,
+                ticket_type: ticketType,
+                ticket_name: ticketNameValue,
+                language: languageValue || undefined,
+                notification_mode: 'available_only', // Default to only notify when available
+                // ✅ CRITICAL: Do NOT send ticket_id - let the system resolve fresh IDs
             };
 
             await api.createTask(payload);
@@ -103,8 +96,8 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
     };
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-[#050505]/80 backdrop-blur-xl">
-            <div className="bento-card w-full max-w-xl relative overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-6 bg-[#050505]/80 backdrop-blur-xl">
+            <div className="bento-card w-full sm:max-w-xl relative overflow-hidden max-h-[92vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
                 {/* Green accent bar */}
                 <div className="absolute top-0 left-0 w-full h-1 bg-[#00E37C]" style={{ marginTop: '-32px', marginLeft: '-32px', width: 'calc(100% + 64px)' }}></div>
 
@@ -122,69 +115,43 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
 
                 <form onSubmit={handleSubmit} className="space-y-6">
                     <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Target Site</label>
-                                <select
-                                    value={formData.site}
-                                    onChange={(e) => {
-                                        const site = e.target.value as 'vatican' | 'colosseum';
-                                        setFormData({
-                                            ...formData,
-                                            site,
-                                            area_name: areaOptions[site][0].value
-                                        });
-                                    }}
-                                    className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
-                                >
-                                    <option value="vatican">Vatican Museums</option>
-                                    <option value="colosseum">Colosseum</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Area / Type</label>
-                                <select
-                                    value={formData.area_name}
-                                    onChange={(e) => setFormData({ ...formData, area_name: e.target.value })}
-                                    className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
-                                >
-                                    {areaOptions[formData.site].map(opt => (
-                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                    ))}
-                                </select>
-                            </div>
+                        {/* Ticket Selector - Primary Selection */}
+                        <div>
+                            <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">
+                                Select Ticket Type
+                            </label>
+                            <select
+                                value={selectedTicketId || ''}
+                                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                                    setSelectedTicketId(e.target.value || null);
+                                }}
+                                className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
+                                required
+                            >
+                                <option value="">-- Select Ticket Type --</option>
+                                {vaticanTickets.map((ticket: any) => (
+                                    <option key={ticket.id} value={ticket.id}>
+                                        {ticket.name}
+                                    </option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-[#666666] mt-2">
+                                Choose between standard entry or guided tours in different languages
+                            </p>
                         </div>
 
-
-                        <div className="grid grid-cols-2 gap-4">
-                            {/* Language selector - only show for Guided Tours */}
-                            {formData.area_name === 'MV-Tour' && (
-                                <div>
-                                    <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Tour Language</label>
-                                    <select
-                                        value={formData.language}
-                                        onChange={(e) => setFormData({ ...formData, language: e.target.value })}
-                                        className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
-                                    >
-                                        <option value="ENG">English</option>
-                                        <option value="ITA">Italiano</option>
-                                        <option value="SPA">Español</option>
-                                        <option value="FRA">Français</option>
-                                        <option value="TED">Deutsch</option>
-                                    </select>
-                                </div>
-                            )}
-                            <div className={formData.area_name === 'MV-Tour' ? '' : 'col-span-2'}>
-                                <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Visitors (PAX)</label>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    max="10"
-                                    value={formData.visitors}
-                                    onChange={(e) => setFormData({ ...formData, visitors: parseInt(e.target.value) })}
-                                    className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
-                                />
-                            </div>
+                        {/* Visitors */}
+                        <div>
+                            <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Number of Visitors</label>
+                            <input
+                                type="number"
+                                min="1"
+                                max="10"
+                                value={formData.visitors}
+                                onChange={(e) => setFormData({ ...formData, visitors: parseInt(e.target.value) })}
+                                className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
+                                required
+                            />
                         </div>
 
                         <div>
@@ -215,72 +182,28 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                             </div>
                         </div>
 
-                        {formData.site === 'vatican' && (
-                            <div className="border-t border-[#262626] pt-6">
-                                <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">
-                                    Select Ticket Type
-                                </label>
-                                <select
-                                    value={selectedTicketId || ''}
-                                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-                                        const ticket = vaticanTickets.find((t: any) => t.id === e.target.value);
-                                        if (ticket) {
-                                            setSelectedTicketId(ticket.id);
-                                            setSelectedTicketName(ticket.name);
-                                            // Language is handled separately or inferred, not in this JSON
-                                            setFormData({ ...formData, area_name: ticket.tag });
-                                        }
-                                    }}
-                                    className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
-                                >
-                                    <option value="">-- Select Ticket --</option>
-                                    {vaticanTickets.map((ticket: any) => (
-                                        <option key={ticket.id} value={ticket.id}>
-                                            {ticket.name}
-                                        </option>
-                                    ))}
-                                </select>
-
-                                {selectedTicketId && selectedTicketId.startsWith('guided_') && (
-                                    <div className="mt-4">
-                                        <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">
-                                            Tour Language
-                                        </label>
-                                        <select
-                                            value={selectedLanguage || ''}
-                                            onChange={(e) => setSelectedLanguage(e.target.value || null)}
-                                            className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm"
-                                        >
-                                            <option value="">-- Select Language --</option>
-                                            <option value="ENG">English</option>
-                                            <option value="ITA">Italian</option>
-                                            <option value="FRA">French</option>
-                                            <option value="SPA">Spanish</option>
-                                            <option value="DEU">German</option>
-                                        </select>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
+                        {/* Preferred Times */}
                         <div>
-                            <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Time Prefs (HH:MM)</label>
+                            <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Preferred Times (Optional)</label>
                             <input
                                 type="text"
-                                placeholder="e.g. 09:00, 10:30"
+                                placeholder="e.g. 09:00, 10:30, 14:00"
                                 value={formData.preferred_times}
                                 onChange={(e) => setFormData({ ...formData, preferred_times: e.target.value })}
                                 className="w-full bg-[#1a1a1a] border border-[#262626] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00E37C]/50 text-sm placeholder:text-[#888888]"
                             />
+                            <p className="text-xs text-[#666666] mt-2">
+                                You'll be notified of all available slots, but preferred times will be highlighted
+                            </p>
                         </div>
                     </div>
 
                     <button
-                        disabled={loading || !agencyId}
+                        disabled={loading || !agencyId || !selectedTicketId}
                         type="submit"
                         className="btn-primary w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        {!agencyId ? 'Initializing Session...' : loading ? 'Initializing Engine...' : 'Authorize Monitoring'}
+                        {!agencyId ? 'Initializing Session...' : loading ? 'Creating Monitor...' : 'Create Monitor'}
                     </button>
                 </form>
             </div>

@@ -21,12 +21,23 @@ class Migration(migrations.Migration):
             ],
             database_operations=[
                 migrations.RunSQL(
-                    'ALTER TABLE monitors_agency ADD COLUMN IF NOT EXISTS owner_id varchar(100);',
-                    reverse_sql='ALTER TABLE monitors_agency DROP COLUMN IF EXISTS owner_id;'
+                    # SQLite doesn't support IF NOT EXISTS in ADD COLUMN
+                    # We can skip this check for SQLite or use a more complex logic,
+                    # but simpler is to just assume it might fail if exists (which Django handles gracefully usually)
+                    # or better, just use standard Django AddField for new columns if we don't need raw SQL speed
+                    # But since this is a migration file we can't easily change the logic type now without breaking history.
+                    # FIX: Remove IF NOT EXISTS for SQLite compatibility or handle it via Python
+                    # For now, let's try standard SQL which works on Postgres but fails on SQLite.
+                    # Since we are likely on SQLite locally, we need a compatible statement.
+                    # SQLite supports ADD COLUMN but not IF NOT EXISTS.
+                    'ALTER TABLE monitors_agency ADD COLUMN owner_id varchar(100);',
+                    reverse_sql='ALTER TABLE monitors_agency DROP COLUMN owner_id;'
                 ),
+                # Unique constraint adding in SQLite is tricky, usually requires recreation of table.
+                # But modern SQLite supports CREATE UNIQUE INDEX.
                 migrations.RunSQL(
-                    'ALTER TABLE monitors_agency ADD CONSTRAINT monitors_agency_owner_id_key UNIQUE (owner_id);',
-                    reverse_sql='ALTER TABLE monitors_agency DROP CONSTRAINT monitors_agency_owner_id_key;'
+                    'CREATE UNIQUE INDEX IF NOT EXISTS monitors_agency_owner_id_key ON monitors_agency(owner_id);',
+                    reverse_sql='DROP INDEX IF EXISTS monitors_agency_owner_id_key;'
                 ),
             ],
         ),

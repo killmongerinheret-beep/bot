@@ -1,62 +1,44 @@
 [
     {
-        "id": "1750097398",
-        "name": "Standard Entry (Full Price)",
+        "id": "standard_any",
+        "name": "Standard Entry (Any Available)",
         "tag": "MV-Biglietti",
-        "visitor_type": 1
+        "ticket_type": 0,
+        "language": null
     },
     {
-        "id": "4498772",
-        "name": "Standard Entry (Reduced)",
-        "tag": "MV-Biglietti",
-        "visitor_type": 1
+        "id": "guided_eng",
+        "name": "Guided Tour - English",
+        "tag": "MV-Visite-Guidate", 
+        "ticket_type": 1,
+        "language": "ENG"
     },
     {
-        "id": "115340888",
-        "name": "Standard Entry (Student)",
-        "tag": "MV-Biglietti",
-        "visitor_type": 1
-    },
-    {
-        "id": "355169404",
-        "name": "Guided Tour (English)",
+        "id": "guided_ita",
+        "name": "Guided Tour - Italiano",
         "tag": "MV-Visite-Guidate",
-        "visitor_type": 1
+        "ticket_type": 1,
+        "language": "ITA"
     },
     {
-        "id": "1380623678",
-        "name": "Guided Tour (Italian)",
+        "id": "guided_fra",
+        "name": "Guided Tour - Français",
         "tag": "MV-Visite-Guidate",
-        "visitor_type": 1
+        "ticket_type": 1,
+        "language": "FRA"
     },
     {
-        "id": "1269781562",
-        "name": "Guided Tour (French)",
+        "id": "guided_spa",
+        "name": "Guided Tour - Español",
         "tag": "MV-Visite-Guidate",
-        "visitor_type": 1
+        "ticket_type": 1,
+        "language": "SPA"
     },
     {
-        "id": "1232834190",
-        "name": "Guided Tour (Spanish)",
+        "id": "guided_deu",
+        "name": "Guided Tour - Deutsch",
         "tag": "MV-Visite-Guidate",
-        "visitor_type": 1
-    },
-    {
-        "id": "1",
-        "name": "Any Standard Ticket",
-        "tag": "MV-Biglietti",
-        "visitor_type": 1
-    },
-    {
-        "id": "2",
-        "name": "Any Guided Tour",
-        "tag": "MV-Visite-Guidate",
-        "visitor_type": 1
-    },
-    {
-        "id": "3",
-        "name": "Prime Experience",
-        "tag": "MV-Prime",
-        "visitor_type": 1
+        "ticket_type": 1,
+        "language": "DEU"
     }
 ]

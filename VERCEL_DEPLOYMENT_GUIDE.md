@@ -1,379 +1,172 @@
-# 🚀 VERCEL DEPLOYMENT GUIDE
-**Date:** February 28, 2026  
-**Status:** Ready for Deployment
+# Vercel Deployment Guide
+
+## 🚀 Deploy Frontend to Vercel
+
+### Prerequisites
+- GitHub repository: https://github.com/killmongerinheret-beep/bot-front.git
+- Vercel account (free tier works)
+- Backend running at: http://151.25.69.162:8000
 
 ---
 
-## ✅ FRONTEND BUILD STATUS
+## 📋 Step-by-Step Deployment
 
-**Build Command:** `npm run build`  
-**Build Status:** ✅ SUCCESS  
-**Build Time:** 14.1s  
-**Next.js Version:** 16.1.4  
-**TypeScript:** ✅ Passed (4.1s)  
-**Pages Generated:** 2 (/, /_not-found)
-
----
-
-## 🎯 WHAT WAS FIXED
-
-The frontend now correctly handles language defaults:
-
-### Before Fix:
-```typescript
-language: 'ENG'  // ❌ Hardcoded for all tickets
-```
-
-### After Fix:
-```typescript
-language: ''  // ✅ Empty, determined by ticket type
-
-// Standard tickets → language = undefined (null in DB)
-// Guided tours → language = 'ENG' | 'ITA' | 'FRA' | 'DEU' | 'SPA'
-```
-
----
-
-## 📋 DEPLOYMENT STEPS
-
-### Option 1: Deploy via Vercel CLI (Recommended)
-
-1. **Install Vercel CLI** (if not already installed):
-   ```bash
-   npm install -g vercel
-   ```
-
-2. **Navigate to frontend directory**:
-   ```bash
-   cd frontend
-   ```
-
-3. **Login to Vercel**:
-   ```bash
-   vercel login
-   ```
-
-4. **Deploy to production**:
-   ```bash
-   vercel --prod
-   ```
-
-5. **Verify deployment**:
-   - Check the deployment URL provided by Vercel
-   - Test creating a new monitor
-   - Verify language field behavior
-
----
-
-### Option 2: Deploy via Vercel Dashboard
-
-1. **Go to Vercel Dashboard**: https://vercel.com/dashboard
-
-2. **Select your project** (or import if first time)
-
-3. **Trigger new deployment**:
-   - Click "Deployments" tab
-   - Click "Redeploy" button
-   - Or push to your Git repository (auto-deploy)
-
-4. **Wait for build to complete**
-
-5. **Verify deployment**:
-   - Visit your production URL
-   - Test the new monitor creation flow
-
----
-
-### Option 3: Git Push (Auto-Deploy)
-
-If you have Vercel connected to your Git repository:
-
-1. **Commit changes**:
-   ```bash
-   git add frontend/src/components/TaskModal.tsx
-   git commit -m "fix: Remove hardcoded ENG language default for standard tickets"
-   ```
-
-2. **Push to main branch**:
-   ```bash
-   git push origin main
-   ```
-
-3. **Vercel will auto-deploy**:
-   - Check Vercel dashboard for deployment status
-   - Usually takes 2-3 minutes
-
----
-
-## 🧪 POST-DEPLOYMENT TESTING
-
-### Test 1: Create Standard Ticket Monitor
-
-1. Open dashboard: `https://your-vercel-url.vercel.app`
-2. Login with your credentials
-3. Click "New Monitor" button
-4. Fill in form:
-   - Site: Vatican Museums
-   - Area: Standard Entry (Biglietti)
-   - Date: Any future date
-   - Visitors: 2
-5. Submit
-
-**Expected Result:**
-- ✅ Monitor created successfully
-- ✅ No language field shown for standard tickets
-- ✅ Database entry has `language=null`
-
-**Verification Command:**
-```bash
-# Check the newly created task
-docker-compose exec -T backend python -c "
-from monitors.models import MonitorTask
-task = MonitorTask.objects.latest('id')
-print(f'Task ID: {task.id}')
-print(f'Ticket Type: {task.ticket_type}')
-print(f'Language: {task.language}')
-print(f'Area: {task.area_name}')
-print(f'Expected: ticket_type=0, language=None')
-"
-```
-
----
-
-### Test 2: Create Guided Tour Monitor
-
-1. Open dashboard
-2. Click "New Monitor"
-3. Fill in form:
-   - Site: Vatican Museums
-   - Area: Guided Tours (MV-Tour)
-   - Language: English (should be visible)
-   - Date: Any future date
-   - Visitors: 1
-4. Submit
-
-**Expected Result:**
-- ✅ Monitor created successfully
-- ✅ Language selector visible for guided tours
-- ✅ Database entry has `language='ENG'`
-
-**Verification Command:**
-```bash
-# Check the newly created task
-docker-compose exec -T backend python -c "
-from monitors.models import MonitorTask
-task = MonitorTask.objects.latest('id')
-print(f'Task ID: {task.id}')
-print(f'Ticket Type: {task.ticket_type}')
-print(f'Language: {task.language}')
-print(f'Area: {task.area_name}')
-print(f'Expected: ticket_type=1, language=ENG')
-"
-```
-
----
-
-### Test 3: Verify Bot Behavior
-
-After creating a new standard ticket monitor:
+### Step 1: Push Frontend Code to GitHub
 
 ```bash
-# Check worker logs for the new task
-docker-compose logs worker_vatican | grep "Task [NEW_TASK_ID]" | tail -20
+# Navigate to frontend directory
+cd frontend
+
+# Initialize git if not already done
+git init
+
+# Add remote (your repository)
+git remote add origin https://github.com/killmongerinheret-beep/bot-front.git
+
+# Add all files
+git add .
+
+# Commit
+git commit -m "Initial frontend deployment"
+
+# Push to main branch
+git push -u origin main
 ```
 
-**Expected in logs:**
-- ✅ `Lang: None` (not "Lang: ENG")
-- ✅ Deep link: `/MV-Biglietti/1`
-- ✅ API URL: `visitLang=` (empty)
-- ✅ API Status: 200
-- ✅ Slots found: > 0
+### Step 2: Connect to Vercel
+
+1. Go to https://vercel.com
+2. Sign in with GitHub
+3. Click "Add New Project"
+4. Import your repository: `killmongerinheret-beep/bot-front`
+5. Configure project settings (see below)
+
+### Step 3: Configure Environment Variables
+
+In Vercel project settings, add these environment variables:
+
+```
+NEXT_PUBLIC_API_URL=http://151.25.69.162:8000/api/v1
+```
+
+**Important**: If you want to use HTTPS, you'll need to set up SSL on your backend first.
+
+### Step 4: Configure Build Settings
+
+Vercel should auto-detect Next.js, but verify:
+
+- **Framework Preset**: Next.js
+- **Build Command**: `npm run build`
+- **Output Directory**: `.next`
+- **Install Command**: `npm install`
+- **Root Directory**: `./` (or leave empty)
+
+### Step 5: Deploy
+
+Click "Deploy" and wait for the build to complete.
 
 ---
 
-## 🔍 TROUBLESHOOTING
+## 🔧 Required Configuration Files
 
-### Issue: Build fails on Vercel
+### 1. vercel.json (Already created below)
 
-**Solution:**
-1. Check build logs in Vercel dashboard
-2. Ensure all dependencies are in `package.json`
-3. Verify Node.js version compatibility
-4. Try local build: `npm run build`
+This file configures Vercel deployment settings.
 
----
+### 2. .env.production (Already created below)
 
-### Issue: Language still defaults to 'ENG'
+Production environment variables.
 
-**Solution:**
-1. Clear browser cache
-2. Hard refresh (Ctrl+Shift+R)
-3. Check if correct version is deployed
-4. Verify deployment URL matches your domain
+### 3. next.config.js (Update if needed)
+
+Ensure CORS and API proxy are configured.
 
 ---
 
-### Issue: New tasks still have wrong language
+## 🌐 CORS Configuration
 
-**Solution:**
-1. Check if frontend is actually deployed
-2. Verify API endpoint is correct
-3. Check browser console for errors
-4. Test API directly:
-   ```bash
-   curl -X POST https://your-backend-url/api/tasks/ \
-     -H "Content-Type: application/json" \
-     -d '{
-       "site": "vatican",
-       "area_name": "MV-Biglietti",
-       "ticket_type": 0,
-       "dates": ["2026-03-15"],
-       "visitors": 2,
-       "agency": 1
-     }'
-   ```
+Since your backend is on a different domain, you need to enable CORS on the backend.
 
----
+### Backend CORS Setup (Django)
 
-## 📊 VERIFICATION CHECKLIST
+Add to `backend/core/settings.py`:
 
-After deployment, verify:
+```python
+CORS_ALLOWED_ORIGINS = [
+    "https://your-vercel-app.vercel.app",
+    "http://localhost:3000",
+    "http://151.25.69.162",
+]
 
-- [ ] Frontend deployed successfully to Vercel
-- [ ] Dashboard loads without errors
-- [ ] Can create new standard ticket monitor
-- [ ] Language field NOT shown for standard tickets
-- [ ] Language field IS shown for guided tours
-- [ ] New standard tasks have `language=null` in database
-- [ ] New guided tour tasks have proper language code
-- [ ] Bot processes new tasks correctly
-- [ ] Logs show "Lang: None" for standard tickets
-- [ ] API calls return 200 responses
-- [ ] Slots are detected correctly
-
----
-
-## 🎯 EXPECTED OUTCOMES
-
-### Database:
-```sql
--- New standard ticket task
-SELECT id, ticket_type, language, area_name 
-FROM monitors_monitortask 
-WHERE id = [NEW_TASK_ID];
-
--- Expected:
--- ticket_type = 0
--- language = NULL
--- area_name = 'MV-Biglietti'
-```
-
-### Bot Logs:
-```
-[INFO] Task 28: Standard Entry (Full Price)
-[INFO] Type: 0 (Standard), Lang: None, Visitors: 2
-[INFO] Deep Link: /fromtag/2/1774652400000/MV-Biglietti/1
-[INFO] API URL: ...visitLang=&visitTypeId=...
-[INFO] API Status: 200
-[INFO] Found 13 slots
-```
-
-### Telegram Message:
-```
-🎉 TICKETS JUST OPENED!
-
-📅 Date: 15/03/2026
-🎫 Ticket: Standard Entry (Full Price)
-👥 Visitors: 2
-🔍 Method: Smart
-
-🕐 Available Times (13 total):
-   • 09:00
-   • 09:30
-   • 10:00
-
-🔗 [Click Here to Book Now](https://tickets.museivaticani.va/home/fromtag/2/1773622800000/MV-Biglietti/1)
+CORS_ALLOW_CREDENTIALS = True
 ```
 
 ---
 
-## 🚨 ROLLBACK PLAN
+## 📝 Post-Deployment Checklist
 
-If deployment causes issues:
-
-### Option 1: Revert in Vercel Dashboard
-1. Go to Vercel Dashboard → Deployments
-2. Find previous working deployment
-3. Click "..." → "Promote to Production"
-
-### Option 2: Git Revert
-```bash
-git revert HEAD
-git push origin main
-```
-
-### Option 3: Manual Fix
-1. Revert `TaskModal.tsx` to previous version
-2. Rebuild: `npm run build`
-3. Redeploy: `vercel --prod`
+- [ ] Frontend deployed to Vercel
+- [ ] Environment variables set
+- [ ] Backend CORS configured
+- [ ] Can access login page
+- [ ] Can login successfully
+- [ ] API calls work
+- [ ] Session persists
+- [ ] All features working
 
 ---
 
-## 📝 DEPLOYMENT NOTES
+## 🔗 Expected URLs
 
-### Environment Variables:
-Ensure these are set in Vercel:
-- `NEXT_PUBLIC_API_URL` - Backend API URL
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` - Clerk auth key
-- Any other required environment variables
-
-### Build Settings:
-- Framework: Next.js
-- Build Command: `npm run build`
-- Output Directory: `.next`
-- Install Command: `npm install`
-- Node Version: 20.x (recommended)
+- **Vercel Frontend**: `https://bot-front-xxx.vercel.app`
+- **Backend API**: `http://151.25.69.162:8000/api/v1`
+- **Login Page**: `https://bot-front-xxx.vercel.app`
 
 ---
 
-## ✅ SUCCESS CRITERIA
+## 🐛 Troubleshooting
 
-Deployment is successful when:
+### Issue: API calls fail with CORS error
+**Solution**: Add Vercel domain to backend CORS_ALLOWED_ORIGINS
 
-1. ✅ Frontend builds without errors
-2. ✅ Dashboard loads and is responsive
-3. ✅ Can create new monitors
-4. ✅ Standard tickets: No language field, `language=null` in DB
-5. ✅ Guided tours: Language selector visible, proper code in DB
-6. ✅ Bot processes new tasks correctly
-7. ✅ No "Lang: ENG" in logs for standard tickets
-8. ✅ API calls return 200 responses
-9. ✅ Availability detection working
-10. ✅ Telegram alerts include booking links
+### Issue: Environment variables not working
+**Solution**: Redeploy after adding environment variables
 
----
+### Issue: Build fails
+**Solution**: Check build logs in Vercel dashboard
 
-## 🎉 FINAL STATUS
-
-**Frontend Code:** ✅ FIXED  
-**Local Build:** ✅ SUCCESS  
-**Ready for Deployment:** ✅ YES  
-**Deployment Method:** Choose Option 1, 2, or 3 above  
-**Estimated Deployment Time:** 2-5 minutes  
-**Testing Required:** Yes (follow post-deployment tests)
+### Issue: 404 on routes
+**Solution**: Ensure Next.js routing is configured correctly
 
 ---
 
-**Next Steps:**
-1. Choose deployment method (CLI, Dashboard, or Git)
-2. Deploy to Vercel
-3. Run post-deployment tests
-4. Verify new monitors are created correctly
-5. Monitor bot logs for any issues
+## 🔄 Continuous Deployment
+
+Once connected, Vercel will automatically deploy:
+- **Main branch**: Production deployment
+- **Other branches**: Preview deployments
+- **Pull requests**: Preview deployments
+
+Every push to GitHub triggers a new deployment!
 
 ---
 
-**Last Updated:** February 28, 2026 16:30 UTC  
-**Prepared By:** AI Assistant (Kiro)  
-**Status:** 📋 READY FOR DEPLOYMENT
+## 📊 Monitoring
 
+Vercel provides:
+- Build logs
+- Runtime logs
+- Analytics
+- Performance metrics
+
+Access these in the Vercel dashboard.
+
+---
+
+## 🎯 Next Steps After Deployment
+
+1. Test all functionality on Vercel URL
+2. Update any hardcoded URLs
+3. Configure custom domain (optional)
+4. Set up SSL for backend (recommended)
+5. Monitor performance and errors

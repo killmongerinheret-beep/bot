@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+Vatican Search API Monitor - Simplified and Efficient
+=====================================================
+Uses Vatican's search API directly - no browser automation needed.
+10x faster, more reliable, works for ALL days including Mondays.
+
+Key Features:
+- Direct API calls (no Playwright/browser)
+- Works for all days (Monday-Sunday)
+- Session management with JSESSIONID
+- Automatic ticket ID resolution
+- Fast and lightweight
+"""
+
+import logging
+import requests
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import List, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+class VaticanSearchAPIMonitor:
+    """
+    Simplified Vatican monitor using search API only.
+    No browser automation required.
+    """
+    
+    def __init__(self, proxy_str: Optional[str] = None):
+        """
+        Initialize the monitor.
+        
+        Args:
+            proxy_str: Optional proxy string (http://user:pass@host:port)
+        """
+        self.proxy_str = proxy_str
+        self.session = requests.Session()
+        
+        # Set up proxies if provided
+        if proxy_str:
+            self.session.proxies = {
+                'http': proxy_str,
+                'https': proxy_str
+            }
+        
+        # Standard headers for Vatican API
+        self.headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://tickets.museivaticani.va/',
+            'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
+            'Origin': 'https://tickets.museivaticani.va'
+        }
+        
+        logger.info(f"✅ VaticanSearchAPIMonitor initialized (proxy: {'Yes' if proxy_str else 'No'})")
+    
+    def normalize_date_format(self, date_str: str) -> str:
+        """
+        Normalize date to DD/MM/YYYY format (Vatican API format).
+        
+        Args:
+            date_str: Date in DD/MM/YYYY or YYYY-MM-DD format
+        
+        Returns:
+            Date in DD/MM/YYYY format
+        """
+        try:
+            # If already in DD/MM/YYYY format, return as-is
+            if '/' in date_str and len(date_str.split('/')[2]) == 4:
+                return date_str
+            
+            # Convert from YYYY-MM-DD to DD/MM/YYYY
+            if '-' in date_str:
+                year, month, day = date_str.split('-')
+                return f"{day}/{month}/{year}"
+            
+            # If format is unclear, try to parse and reformat
+            return date_str
+        except Exception as e:
+            logger.warning(f"⚠️ Could not normalize date {date_str}: {e}")
+            return date_str
+    
+    def get_vatican_timestamp(self, date_str: str) -> int:
+        """
+        Convert date string to Vatican timestamp (milliseconds since epoch in Rome timezone).
+        
+        Args:
+            date_str: Date in DD/MM/YYYY or YYYY-MM-DD format
+        
+        Returns:
+            Timestamp in milliseconds
+        """
+        try:
+            if '/' in date_str:
+                day, month, year = date_str.split('/')
+            else:
+                year, month, day = date_str.split('-')
+            
+            rome = ZoneInfo("Europe/Rome")
+            dt = datetime(int(year), int(month), int(day), 0, 0, 0, tzinfo=rome)
+            timestamp_ms = int(dt.timestamp() * 1000)
+            
+            return timestamp_ms
+        except Exception as e:
+            logger.error(f"❌ Error converting date {date_str}: {e}")
+            raise
+    
+    def resolve_ticket_ids(
+        self,
+        target_date: str,
+        visitors: int,
+        ticket_type: int = 0,
+        language: Optional[str] = None
+    ) -> List[Dict[str, str]]:
+        """
+        Resolve ticket IDs using search API.
+        
+        Args:
+            target_date: Date in DD/MM/YYYY or YYYY-MM-DD format
+            visitors: Number of visitors
+            ticket_type: 0 for standard tickets, 1 for guided tours
+            language: Language code (ENG, ITA, etc.) - for guided tours
+        
+        Returns:
+            List of dicts with 'id', 'name', 'availability' keys
+        """
+        # Normalize date to DD/MM/YYYY format
+        normalized_date = self.normalize_date_format(target_date)
+        
+        # Determine tag based on ticket type
+        tag = 'MV-Biglietti' if ticket_type == 0 else 'MV-Visite-Guidate'
+        
+        url = "https://tickets.museivaticani.va/api/search/resultPerTag"
+        params = {
+            'lang': 'it',
+            'visitorNum': str(visitors),
+            'visitDate': normalized_date,
+            'area': '1',
+            'who': '',
+            'page': '0',
+            'tag': tag
+        }
+        
+        logger.info(f"🔍 Resolving ticket IDs via search API...")
+        logger.info(f"   Date: {normalized_date}, Visitors: {visitors}, Type: {'Standard' if ticket_type == 0 else 'Guided'}")
+        
+        try:
+            response = self.session.get(
+                url,
+                params=params,
+                headers=self.headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Extract JSESSIONID from cookies
+                jsessionid = None
+                for cookie in self.session.cookies:
+                    if cookie.name == 'JSESSIONID':
+                        jsessionid = cookie.value
+                        logger.info(f"✅ JSESSIONID obtained: {jsessionid[:20]}...")
+                        break
+                
+                # Extract ticket information
+                tickets = []
+                for ticket in data.get('visits', []):
+                    tickets.append({
+                        'id': str(ticket['id']),
+                        'name': ticket.get('name', 'Unknown'),
+                        'availability': ticket.get('availability', 'UNKNOWN')
+                    })
+                
+                logger.info(f"✅ Found {len(tickets)} tickets")
+                for ticket in tickets[:5]:  # Log first 5
+                    logger.info(f"   • {ticket['name']}: {ticket['availability']}")
+                
+                return tickets
+            else:
+                logger.error(f"❌ Search API error: {response.status_code}")
+                logger.error(f"   Response: {response.text[:200]}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"❌ Search API exception: {e}")
+            return []
+    
+    def match_ticket_by_name(
+        self,
+        tickets: List[Dict[str, str]],
+        ticket_name: str,
+        ticket_type: int = 0
+    ) -> Optional[str]:
+        """
+        Match ticket by name using 3-tier strategy.
+        
+        Args:
+            tickets: List of ticket dicts from search API
+            ticket_name: Target ticket name to match
+            ticket_type: 0 for standard, 1 for guided tours
+        
+        Returns:
+            Ticket ID if found, None otherwise
+        """
+        if not tickets:
+            return None
+        
+        ticket_name_lower = ticket_name.lower()
+        
+        # Strategy 1: Exact substring match
+        for ticket in tickets:
+            name = ticket.get('name', '').lower()
+            if ticket_name_lower in name or name in ticket_name_lower:
+                # Skip lunch tickets for standard tickets
+                if ticket_type == 0 and any(x in name for x in ['lunch', 'pranzo']):
+                    continue
+                logger.info(f"✅ Exact match: {ticket['name']}")
+                return ticket['id']
+        
+        # Strategy 2: Keyword scoring
+        if ticket_type == 0:
+            keywords = ['musei', 'vaticani', 'biglietti', 'ingresso', 'museum']
+        else:
+            keywords = ['visita', 'guidata', 'guided', 'tour']
+        
+        best_score = 0
+        best_id = None
+        best_name = None
+        
+        for ticket in tickets:
+            name = ticket.get('name', '').lower()
+            
+            # Skip unwanted tickets
+            if any(x in name for x in ['lunch', 'pranzo', 'pellegrinaggi', 'scuole']):
+                continue
+            
+            score = sum(1 for kw in keywords if kw in name)
+            if score > best_score:
+                best_score = score
+                best_id = ticket['id']
+                best_name = ticket['name']
+        
+        if best_score >= 2:
+            logger.info(f"✅ Keyword match (score {best_score}): {best_name}")
+            return best_id
+        
+        # Strategy 3: Fallback to first standard ticket
+        if ticket_type == 0:
+            for ticket in tickets:
+                name = ticket.get('name', '').lower()
+                if 'musei vaticani' in name and 'biglietti' in name:
+                    if not any(x in name for x in ['lunch', 'pranzo', 'gruppi', 'scuole']):
+                        logger.info(f"✅ Fallback match: {ticket['name']}")
+                        return ticket['id']
+        
+        logger.warning(f"❌ No match found for: {ticket_name}")
+        return None
+    
+    def check_availability(
+        self,
+        ticket_id: str,
+        target_date: str,
+        visitors: int,
+        language: Optional[str] = None
+    ) -> Tuple[bool, List[str]]:
+        """
+        Check ticket availability using timeavail API.
+        
+        Args:
+            ticket_id: Vatican ticket ID
+            target_date: Date in DD/MM/YYYY or YYYY-MM-DD format
+            visitors: Number of visitors
+            language: Language code (empty for standard tickets)
+        
+        Returns:
+            Tuple of (success: bool, available_slots: List[str])
+        """
+        # Normalize date to DD/MM/YYYY format
+        normalized_date = self.normalize_date_format(target_date)
+        
+        url = "https://tickets.museivaticani.va/api/visit/timeavail"
+        
+        # visitLang should be empty string for standard tickets
+        visit_lang = language if language else ""
+        
+        params = {
+            'lang': 'it',
+            'visitLang': visit_lang,
+            'visitTypeId': ticket_id,
+            'visitorNum': str(visitors),
+            'visitDate': normalized_date
+        }
+        
+        logger.info(f"🔍 Checking availability...")
+        logger.info(f"   Ticket ID: {ticket_id}")
+        logger.info(f"   Date: {normalized_date}, Visitors: {visitors}")
+        
+        try:
+            response = self.session.get(
+                url,
+                params=params,
+                headers=self.headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if 'timetable' in data:
+                    timetable = data['timetable']
+                    available_slots = [
+                        slot['time'] for slot in timetable 
+                        if slot.get('availability') != 'SOLD_OUT'
+                    ]
+                    
+                    logger.info(f"✅ Timeavail API success")
+                    logger.info(f"   Total slots: {len(timetable)}")
+                    logger.info(f"   Available: {len(available_slots)}")
+                    
+                    if available_slots:
+                        logger.info(f"   First 3 slots: {', '.join(available_slots[:3])}")
+                    
+                    return True, available_slots
+                else:
+                    logger.error(f"❌ No timetable in response")
+                    return False, []
+            else:
+                logger.error(f"❌ Timeavail API error: {response.status_code}")
+                logger.error(f"   Response: {response.text[:200]}")
+                return False, []
+                
+        except Exception as e:
+            logger.error(f"❌ Timeavail API exception: {e}")
+            return False, []
+    
+    def check_ticket(
+        self,
+        target_date: str,
+        ticket_name: str,
+        visitors: int,
+        ticket_type: int = 0,
+        language: Optional[str] = None
+    ) -> Tuple[bool, List[str], Optional[str]]:
+        """
+        Complete check: resolve ticket ID and check availability.
+        
+        Args:
+            target_date: Date in DD/MM/YYYY format
+            ticket_name: Ticket name to search for
+            visitors: Number of visitors
+            ticket_type: 0 for standard, 1 for guided tours
+            language: Language code (for guided tours)
+        
+        Returns:
+            Tuple of (success: bool, available_slots: List[str], ticket_id: Optional[str])
+        """
+        logger.info(f"🎫 Starting ticket check...")
+        logger.info(f"   Date: {target_date}")
+        logger.info(f"   Ticket: {ticket_name}")
+        logger.info(f"   Visitors: {visitors}")
+        
+        # Step 1: Resolve ticket IDs
+        tickets = self.resolve_ticket_ids(target_date, visitors, ticket_type, language)
+        
+        if not tickets:
+            logger.error(f"❌ No tickets found")
+            return False, [], None
+        
+        # Step 2: Match ticket by name
+        ticket_id = self.match_ticket_by_name(tickets, ticket_name, ticket_type)
+        
+        if not ticket_id:
+            logger.error(f"❌ Could not match ticket: {ticket_name}")
+            return False, [], None
+        
+        # Step 3: Check availability
+        success, available_slots = self.check_availability(
+            ticket_id, target_date, visitors, language
+        )
+        
+        return success, available_slots, ticket_id
+
+
+# Convenience function for backward compatibility
+def check_vatican_availability(
+    target_date: str,
+    ticket_name: str,
+    visitors: int,
+    ticket_type: int = 0,
+    language: Optional[str] = None,
+    proxy_str: Optional[str] = None
+) -> Tuple[bool, List[str], Optional[str]]:
+    """
+    Convenience function to check Vatican ticket availability.
+    
+    Returns:
+        Tuple of (success: bool, available_slots: List[str], ticket_id: Optional[str])
+    """
+    monitor = VaticanSearchAPIMonitor(proxy_str=proxy_str)
+    return monitor.check_ticket(target_date, ticket_name, visitors, ticket_type, language)

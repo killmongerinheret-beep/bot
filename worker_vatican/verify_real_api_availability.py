@@ -32,6 +32,8 @@ class RealAPIVerification:
             "04/04/2026",  # April 4
             "26/03/2026",  # March 26 (known to have availability)
             "27/03/2026",  # March 27
+            "23/03/2026",  # March 23
+            "30/03/2026",  # March 30
         ]
         self.test_visitors = 1
         self.results = {}

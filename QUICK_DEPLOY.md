@@ -1,68 +1,44 @@
-# ⚡ QUICK DEPLOY - Vatican Bot Frontend
+# Quick Deploy to Vercel - 3 Steps
 
-## 🚀 Deploy Now (Choose One):
+## Step 1: Push to GitHub (2 minutes)
 
-### Option 1: PowerShell Script (Easiest)
-```powershell
-.\deploy_frontend.ps1
-```
-
-### Option 2: Vercel CLI (Fastest)
+**Windows:**
 ```bash
-cd frontend
-vercel --prod
+./deploy_to_vercel.bat
 ```
 
-### Option 3: Git Push (Auto)
+**Linux/Mac:**
 ```bash
-git push origin main
+chmod +x deploy_to_vercel.sh
+./deploy_to_vercel.sh
 ```
 
----
+## Step 2: Import to Vercel (1 minute)
 
-## ✅ After Deployment:
+1. Go to https://vercel.com
+2. Click "Add New Project"
+3. Select: `killmongerinheret-beep/bot-front`
+4. Add environment variable:
+   ```
+   NEXT_PUBLIC_API_URL=http://151.25.69.162:8000/api/v1
+   ```
+5. Click "Deploy"
 
-### Test Standard Ticket:
-1. Open dashboard
-2. New Monitor → Vatican → Standard Entry
-3. Verify: No language field shown
-4. Submit and check: `language=null` in DB
+## Step 3: Test (1 minute)
 
-### Test Guided Tour:
-1. New Monitor → Vatican → Guided Tours
-2. Verify: Language selector visible
-3. Select language and submit
-4. Check: `language='ENG'` in DB
+1. Open your Vercel URL: `https://bot-front-xxx.vercel.app`
+2. Login with: `agency-admin` / `agency-admin`
+3. Verify dashboard loads
 
-### Verify Bot:
-```bash
-# Check logs
-docker-compose logs worker_vatican | grep "Lang:" | tail -10
+## Done! 🎉
 
-# Run test
-python test_new_monitor_creation.py
-```
+Your frontend is now live on Vercel with:
+- ✅ Authentication working
+- ✅ Multi-tenant isolation
+- ✅ Vatican monitoring
+- ✅ Real-time updates
+- ✅ Automatic deployments on git push
 
----
+## Need Help?
 
-## 📊 Expected Results:
-
-✅ Standard tickets: `Lang: None` in logs  
-✅ Guided tours: `Lang: ENG` in logs  
-✅ API Status: 200  
-✅ Slots found: > 0  
-
----
-
-## 🆘 If Issues:
-
-1. Clear browser cache (Ctrl+Shift+R)
-2. Check Vercel deployment logs
-3. Verify backend is running
-4. See `VERCEL_DEPLOYMENT_GUIDE.md` for details
-
----
-
-**Status:** ✅ READY  
-**Build:** ✅ SUCCESS  
-**Risk:** 🟢 LOW
+See `VERCEL_DEPLOYMENT_READY.md` for detailed instructions and troubleshooting.

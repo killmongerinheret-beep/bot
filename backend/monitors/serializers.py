@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Agency, MonitorTask, CheckResult, Proxy, SiteCredential
+from .models import Agency, MonitorTask, CheckResult, Proxy, SiteCredential, User
 
 class SiteCredentialSerializer(serializers.ModelSerializer):
     class Meta:
@@ -10,6 +10,15 @@ class ProxySerializer(serializers.ModelSerializer):
     class Meta:
         model = Proxy
         fields = '__all__'
+
+class UserSerializer(serializers.ModelSerializer):
+    agency_name = serializers.ReadOnlyField(source='agency.name')
+    
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'full_name', 'agency', 'agency_name', 
+                 'is_active', 'is_admin', 'is_super_admin', 'last_login', 'created_at']
+        read_only_fields = ['id', 'created_at', 'last_login']
 
 class AgencySerializer(serializers.ModelSerializer):
     credentials = SiteCredentialSerializer(many=True, read_only=True)

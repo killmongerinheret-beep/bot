@@ -1,303 +1,149 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { MonitorTask, api } from '@/lib/api';
-import { motion } from 'framer-motion';
-import {
-    Clock,
-    Calendar,
-    Play,
-    Trash2,
-    ExternalLink,
-    Zap,
-    Globe,
-    Check
-} from 'lucide-react';
+import { MonitorTask } from '@/lib/api';
+import { Clock, Calendar, Trash2, Check, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface TaskCardProps {
     task: MonitorTask;
     onDelete?: (id: number) => Promise<void>;
 }
 
+const STATUS_STYLES: Record<string, { bar: string; badge: string; label: string }> = {
+    available: { bar: 'bg-[#00E37C]', badge: 'bg-[#00E37C]/10 text-[#00E37C] border-[#00E37C]/30', label: 'Available' },
+    sold_out:  { bar: 'bg-red-500',   badge: 'bg-red-500/10 text-red-400 border-red-500/30',       label: 'Sold Out' },
+    error:     { bar: 'bg-orange-500',badge: 'bg-orange-500/10 text-orange-400 border-orange-500/30', label: 'Error' },
+    closed:    { bar: 'bg-[#555]',    badge: 'bg-[#555]/10 text-[#888] border-[#555]/30',           label: 'Closed' },
+};
+const defaultStyle = { bar: 'bg-blue-500', badge: 'bg-blue-500/10 text-blue-400 border-blue-500/30', label: 'Checking' };
+
 export default function TaskCard({ task, onDelete }: TaskCardProps) {
-    const [timeLeft, setTimeLeft] = useState<string>('...');
+    const [timeLeft, setTimeLeft] = useState('...');
+    const [expanded, setExpanded] = useState(false);
 
-    // Status colors
-    const getStatusColor = (status: string) => {
-        switch (status?.toLowerCase()) {
-            case 'available': return 'bg-[#00E37C]';
-            case 'sold_out': return 'bg-[#FF4D4D]';
-            case 'closed': return 'bg-[#888888]';
-            case 'error': return 'bg-orange-500';
-            default: return 'bg-blue-500';
-        }
-    };
+    const status = task.last_status?.toLowerCase() || 'checking';
+    const style = STATUS_STYLES[status] || defaultStyle;
+    const isAvailable = status === 'available';
 
-    const getStatusBadgeStyle = (status: string) => {
-        switch (status?.toLowerCase()) {
-            case 'available':
-                return 'bg-[#00E37C]/10 text-[#00E37C] border-[#00E37C]/20';
-            case 'sold_out':
-                return 'bg-[#FF4D4D]/10 text-[#FF4D4D] border-[#FF4D4D]/20';
-            case 'closed':
-                return 'bg-[#888888]/10 text-[#888888] border-[#888888]/20';
-            case 'error':
-                return 'bg-orange-500/10 text-orange-500 border-orange-500/20';
-            default:
-                return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-        }
-    };
-
-    // Countdown logic
     useEffect(() => {
-        const interval = setInterval(() => {
-            if (!task.last_checked) {
-                setTimeLeft('Pending');
-                return;
-            }
-            const lastDate = new Date(task.last_checked);
-            const checkInt = task.check_interval || 60;
-            const nextDate = new Date(lastDate.getTime() + checkInt * 1000);
-            const now = new Date();
-            const diff = nextDate.getTime() - now.getTime();
-
-            if (diff <= 0) {
-                setTimeLeft('Now');
-            } else {
-                const mins = Math.floor(diff / 60000);
-                const secs = Math.floor((diff % 60000) / 1000);
-                setTimeLeft(`${mins}:${secs < 10 ? '0' : ''}${secs}`);
-            }
-        }, 1000);
-        return () => clearInterval(interval);
+        const tick = () => {
+            if (!task.last_checked) { setTimeLeft('Pending'); return; }
+            const next = new Date(task.last_checked).getTime() + (task.check_interval || 60) * 1000;
+            const diff = next - Date.now();
+            if (diff <= 0) { setTimeLeft('Now'); return; }
+            const m = Math.floor(diff / 60000);
+            const s = Math.floor((diff % 60000) / 1000);
+            setTimeLeft(`${m}:${s.toString().padStart(2, '0')}`);
+        };
+        tick();
+        const id = setInterval(tick, 1000);
+        return () => clearInterval(id);
     }, [task.last_checked, task.check_interval]);
 
-    // Parse last result summary for additional info
-    const getLastCheckInfo = () => {
-        if (!task.last_result_summary) return null;
-        try {
-            const summary = JSON.parse(task.last_result_summary);
-            return {
-                checkMethod: summary.updates?.[Object.keys(summary.updates || {})[0]]?.[0]?.check_method || 'browser',
-                responseTime: summary.response_time_ms,
-                totalSlots: summary.updates ? Object.values(summary.updates).flat().reduce((acc: number, item: any) => 
-                    acc + (item.slots?.length || 0), 0) : 0
-            };
-        } catch {
-            return null;
-        }
-    };
-
-    // Get available slots from latest_check (handles both flattened and date-keyed payloads)
-    const getAvailableSlots = (): string[] => {
-        const details: any = task.latest_check?.details;
-        if (!details) return [];
-        // Case A: details.slots exists (flattened)
-        if (Array.isArray(details.slots)) {
-            return details.slots
-                .map((slot: any) => (typeof slot === 'string' ? slot : slot?.time || slot))
-                .filter(Boolean);
-        }
-        // Case B: details is a map: { "DD/MM/YYYY": [ { slots: [...] }, ... ] }
-        if (typeof details === 'object') {
+    const getSlots = (): string[] => {
+        const d: any = task.latest_check?.details;
+        if (!d) return [];
+        if (Array.isArray(d.slots)) return d.slots.map((s: any) => typeof s === 'string' ? s : s?.time).filter(Boolean);
+        if (typeof d === 'object') {
             const times: string[] = [];
-            Object.values(details).forEach((items: any) => {
-                if (Array.isArray(items)) {
-                    items.forEach((it: any) => {
-                        const arr = it?.slots || [];
-                        arr.forEach((s: any) => {
-                            times.push(typeof s === 'string' ? s : s?.time || s);
-                        });
-                    });
-                }
+            Object.values(d).forEach((items: any) => {
+                if (Array.isArray(items)) items.forEach((it: any) => (it?.slots || []).forEach((s: any) => times.push(typeof s === 'string' ? s : s?.time)));
             });
             return times.filter(Boolean);
         }
         return [];
     };
 
-    const checkInfo = getLastCheckInfo();
-    const availableSlots = getAvailableSlots();
-    const isAvailable = task.last_status?.toLowerCase() === 'available';
+    const slots = getSlots();
+    const langFlag: Record<string, string> = { ENG: '🇬🇧', ITA: '🇮🇹', FRA: '🇫🇷', DEU: '🇩🇪', SPA: '🇪🇸' };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            whileHover={{ y: -2, transition: { duration: 0.2 } }}
-            className="bento-card group"
-        >
-            {/* Status Bar */}
-            <div className={`h-1 w-full -mt-8 -mx-8 mb-6 ${getStatusColor(task.last_status || 'checking')}`}
-                style={{ width: 'calc(100% + 64px)' }} />
+        <div className="bg-[#0F0F0F] border border-[#262626] rounded-2xl overflow-hidden">
+            {/* Status bar */}
+            <div className={`h-1 w-full ${style.bar}`} />
 
-            {/* Header */}
-            <div className="flex justify-between items-start mb-6">
-                <div>
-                    <h3 className="text-lg font-semibold text-white mb-1">{task.area_name}</h3>
-                    <p className="text-xs text-[#888888] uppercase tracking-wider">
-                        {task.site === 'vatican' ? 'Vatican Museums' : 'Colosseum'}
-                    </p>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                    <span className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider border ${getStatusBadgeStyle(task.last_status || 'checking')}`}>
-                        {task.last_status?.replace('_', ' ') || 'Pending'}
+            <div className="p-4">
+                {/* Header row */}
+                <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="min-w-0">
+                        <h3 className="text-base font-semibold text-white truncate">{task.area_name}</h3>
+                        <p className="text-xs text-[#666] mt-0.5">Vatican Museums · {task.visitors} visitor{task.visitors !== 1 ? 's' : ''}</p>
+                    </div>
+                    <span className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${style.badge}`}>
+                        {style.label}
                     </span>
-                    {/* Check Method Badge */}
-                    {checkInfo && (
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border ${
-                            checkInfo.checkMethod === 'headless' || checkInfo.checkMethod === 'god_tier_headless'
-                                ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                                : 'bg-purple-500/10 text-purple-400 border-purple-500/20'
-                        }`}>
-                            {checkInfo.checkMethod === 'headless' || checkInfo.checkMethod === 'god_tier_headless' ? (
-                                <><Zap className="w-3 h-3" /> Headless</>
-                            ) : (
-                                <><Globe className="w-3 h-3" /> Browser</>
-                            )}
-                        </span>
-                    )}
                 </div>
-            </div>
 
-            {/* Ticket Info (if available) */}
-            {(task.ticket_name || task.ticket_id) && (
-                <div className="mb-4 p-3 bg-[#1a1a1a] rounded-lg border border-[#262626]">
-                    <div className="text-xs text-[#888888] uppercase tracking-wider mb-1">Selected Ticket</div>
-                    <div className="text-sm text-white font-medium truncate">{task.ticket_name || 'Unknown Ticket'}</div>
-                    {task.ticket_id && (
-                        <div className="text-xs text-[#888888] font-mono mt-0.5">ID: {task.ticket_id}</div>
-                    )}
-                    {task.language && (
-                        <div className="mt-2">
-                            <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#262626] text-[#888888]">
-                                Language: {task.language}
+                {/* Ticket + language */}
+                {task.ticket_name && (
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                        <span className="text-xs text-[#888] bg-[#1a1a1a] border border-[#262626] px-2.5 py-1 rounded-lg truncate max-w-full">
+                            {task.ticket_name}
+                        </span>
+                        {task.language && (
+                            <span className="text-xs text-[#00E37C] bg-[#00E37C]/10 border border-[#00E37C]/20 px-2 py-1 rounded-lg">
+                                {langFlag[task.language] || ''} {task.language}
                             </span>
-                        </div>
-                    )}
-                </div>
-            )}
+                        )}
+                    </div>
+                )}
 
-            {/* Dates */}
-            <div className="mb-4">
-                <div className="flex items-center gap-2 text-[#888888] text-xs mb-3">
-                    <Calendar className="w-3.5 h-3.5" />
-                    <span className="uppercase tracking-wider font-medium">Target Dates</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                    {task.dates.slice(0, 4).map((d, i) => (
-                        <span
-                            key={i}
-                            className="bg-[#1a1a1a] border border-[#262626] text-[#888888] px-3 py-1.5 rounded-lg text-xs font-mono"
-                        >
-                            {d}
-                        </span>
+                {/* Dates */}
+                <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+                    <Calendar className="w-3.5 h-3.5 text-[#555] shrink-0" />
+                    {task.dates.slice(0, 3).map((d, i) => (
+                        <span key={i} className="text-xs font-mono text-[#888] bg-[#1a1a1a] border border-[#262626] px-2 py-0.5 rounded-md">{d}</span>
                     ))}
-                    {task.dates.length > 4 && (
-                        <span className="bg-[#1a1a1a] border border-[#262626] text-[#888888] px-3 py-1.5 rounded-lg text-xs">
-                            +{task.dates.length - 4} more
-                        </span>
-                    )}
+                    {task.dates.length > 3 && <span className="text-xs text-[#555]">+{task.dates.length - 3}</span>}
                 </div>
-            </div>
-            
-            {/* Preferred Times (Selected) */}
-            {Array.isArray(task.preferred_times) && task.preferred_times.length > 0 && (
-                <div className="mb-4">
-                    <div className="flex items-center gap-2 text-[#888888] text-xs mb-2">
-                        <Clock className="w-3.5 h-3.5" />
-                        <span className="uppercase tracking-wider font-medium">Preferred Times</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                        {task.preferred_times.slice(0, 6).map((t, i) => (
-                            <span
-                                key={i}
-                                className="bg-[#1a1a1a] border border-[#262626] text-[#888888] px-2.5 py-1 rounded-lg text-xs font-mono"
-                            >
-                                {t}
-                            </span>
-                        ))}
-                        {task.preferred_times.length > 6 && (
-                            <span className="bg-[#1a1a1a] border border-[#262626] text-[#888888] px-3 py-1.5 rounded-lg text-xs">
-                                +{task.preferred_times.length - 6} more
-                            </span>
-                        )}
-                    </div>
-                </div>
-            )}
 
-            {/* Available Slots - NEW SECTION */}
-            {isAvailable && availableSlots.length > 0 && (
-                <div className="mb-4 p-3 bg-[#00E37C]/5 rounded-lg border border-[#00E37C]/20">
-                    <div className="flex items-center gap-2 text-[#00E37C] text-xs mb-3">
-                        <Check className="w-3.5 h-3.5" />
-                        <span className="uppercase tracking-wider font-medium">
-                            Available Slots ({availableSlots.length})
-                        </span>
+                {/* Available slots */}
+                {isAvailable && slots.length > 0 && (
+                    <div className="mb-3 p-3 bg-[#00E37C]/5 border border-[#00E37C]/20 rounded-xl">
+                        <div className="flex items-center gap-1.5 mb-2">
+                            <Check className="w-3.5 h-3.5 text-[#00E37C]" />
+                            <span className="text-xs font-semibold text-[#00E37C]">{slots.length} slot{slots.length !== 1 ? 's' : ''} available</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {slots.slice(0, 8).map((s, i) => (
+                                <span key={i} className="text-xs font-mono text-[#00E37C] bg-[#00E37C]/10 border border-[#00E37C]/20 px-2 py-0.5 rounded-md">{s}</span>
+                            ))}
+                            {slots.length > 8 && <span className="text-xs text-[#00E37C]/60">+{slots.length - 8}</span>}
+                        </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        {availableSlots.slice(0, 6).map((slot, i) => (
-                            <span
-                                key={i}
-                                className="bg-[#00E37C]/10 border border-[#00E37C]/20 text-[#00E37C] px-2.5 py-1 rounded-lg text-xs font-mono"
-                            >
-                                {slot}
-                            </span>
-                        ))}
-                        {availableSlots.length > 6 && (
-                            <span className="text-[#00E37C]/70 text-xs px-1 py-1">
-                                +{availableSlots.length - 6} more
-                            </span>
-                        )}
-                    </div>
-                </div>
-            )}
+                )}
 
-            {/* Footer */}
-            <div className="flex justify-between items-center pt-4 border-t border-[#262626]">
-                <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-2 text-xs text-[#888888]">
-                        <div className={`w-2 h-2 rounded-full ${timeLeft === 'Now' ? 'bg-[#00E37C] animate-pulse' : 'bg-[#888888]'}`} />
+                {/* Expandable preferred times */}
+                {task.preferred_times?.length > 0 && (
+                    <button onClick={() => setExpanded(e => !e)} className="flex items-center gap-1 text-xs text-[#555] hover:text-[#888] mb-3 transition-colors">
                         <Clock className="w-3 h-3" />
-                        <span className="font-mono text-white">{timeLeft}</span>
+                        Preferred times
+                        {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                )}
+                {expanded && (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                        {task.preferred_times.map((t, i) => (
+                            <span key={i} className="text-xs font-mono text-[#888] bg-[#1a1a1a] border border-[#262626] px-2 py-0.5 rounded-md">{t}</span>
+                        ))}
                     </div>
-                    {/* Response Time Indicator */}
-                    {checkInfo?.responseTime && (
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                            checkInfo.responseTime < 1000 
-                                ? 'bg-emerald-500/10 text-emerald-400' 
-                                : 'bg-yellow-500/10 text-yellow-400'
-                        }`}>
-                            {checkInfo.responseTime < 1000 
-                                ? `⚡ ${checkInfo.responseTime}ms` 
-                                : `⏱️ ${(checkInfo.responseTime / 1000).toFixed(1)}s`
-                            }
-                        </span>
-                    )}
-                </div>
+                )}
 
-                <div className="flex gap-2">
+                {/* Footer */}
+                <div className="flex items-center justify-between pt-3 border-t border-[#1a1a1a]">
+                    <div className="flex items-center gap-1.5 text-xs text-[#555]">
+                        <div className={`w-1.5 h-1.5 rounded-full ${timeLeft === 'Now' ? 'bg-[#00E37C] animate-pulse' : 'bg-[#333]'}`} />
+                        <span className="font-mono text-[#888]">{timeLeft}</span>
+                    </div>
                     <button
-                        onClick={() => window.location.href = '/dashboard/logs'}
-                        className="h-8 px-3 rounded-lg bg-[#1a1a1a] border border-[#262626] text-[#888888] text-xs font-medium hover:text-white hover:border-[#404040] transition-colors"
+                        onClick={() => confirm('Delete this monitor?') && onDelete?.(task.id)}
+                        className="flex items-center gap-1.5 text-xs text-red-500/70 hover:text-red-400 active:scale-95 transition-all px-3 py-1.5 rounded-lg hover:bg-red-500/10"
                     >
-                        History
-                    </button>
-                    <button className="h-8 w-8 rounded-lg bg-[#00E37C] text-[#050505] flex items-center justify-center hover:bg-[#00E37C]/80 transition-colors">
-                        <Play className="w-3 h-3 ml-0.5" />
-                    </button>
-                    <button
-                        onClick={async () => {
-                            if (confirm('Delete this task?')) {
-                                if (onDelete) await onDelete(task.id);
-                            }
-                        }}
-                        className="h-8 w-8 rounded-lg bg-[#FF4D4D]/10 border border-[#FF4D4D]/20 text-[#FF4D4D] flex items-center justify-center hover:bg-[#FF4D4D]/20 transition-colors"
-                    >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
                     </button>
                 </div>
             </div>
-        </motion.div>
+        </div>
     );
 }

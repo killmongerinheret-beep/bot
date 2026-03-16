@@ -183,7 +183,7 @@ class HydraBot:
         return proxies
 
     @asynccontextmanager
-    async def get_browser(self):
+    async def get_browser(self, headless=True):
         """
         Context manager for browser lifecycle.
         
@@ -191,12 +191,15 @@ class HydraBot:
             async with bot.get_browser() as browser:
                 page = await browser.new_page()
                 # ... use page ...
+        
+        Args:
+            headless: If False, opens visible browser (useful for debugging/Mondays)
         """
         playwright = await async_playwright().start()
         browser = None
         try:
             browser = await playwright.chromium.launch(
-                headless=True,
+                headless=headless,
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
@@ -838,7 +841,7 @@ class HydraBot:
             except Exception as e:
                 logger.warning(f"⚠️ Timeout waiting for ticket elements: {e}. Page might be empty or sold out.")
             
-            # ✅ MONDAY FIX: Check if this is a Monday date (may need special handling)
+            # ✅ MONDAY FIX: Check if this is a Monday date (use headful mode + HTML extraction)
             from datetime import datetime
             import time
             start_time = time.time()
@@ -853,78 +856,17 @@ class HydraBot:
                 is_monday = date_obj.weekday() == 0
                 
                 if is_monday:
-                    logger.info("📅 MONDAY DETECTED - Using AGGRESSIVE progressive wait strategy")
-                    logger.info("⏱️ Waiting 12 seconds for initial page render...")
-                    # Wait 12 seconds BEFORE starting progressive checks (titles need time to render)
-                    await page.wait_for_timeout(12000)
+                    logger.info("📅 MONDAY DETECTED - Using HEADFUL mode with HTML extraction")
+                    logger.info("⏱️ Waiting 30 seconds for all tickets to load (including Musei Vaticani)...")
                     
-                    logger.info("⏱️ Now checking for 'Musei Vaticani' ticket WITH TITLE...")
+                    # Wait longer for Mondays
+                    await page.wait_for_timeout(30000)
                     
-                    # Progressive wait: Check every 3 seconds if Musei Vaticani WITH TITLE appears, up to 30 more seconds
-                    max_wait = 30  # seconds (after initial 12s wait)
-                    check_interval = 3  # seconds
-                    elapsed = 0
-                    musei_found = False
-                    
-                    while elapsed < max_wait:
-                        # ✅ IMPROVED: Check if Musei Vaticani ticket exists WITH a valid title
-                        # Use SAME selectors as final extraction for consistency
-                        musei_result = await page.evaluate('''() => {
-                            const containers = document.querySelectorAll('div[id^="ticket_"]');
-                            let found = false;
-                            let foundId = null;
-                            let foundTitle = null;
-                            
-                            containers.forEach(container => {
-                                // Use SAME selector strategy as final extraction
-                                const selectors = [
-                                    '.muvaTicketTitle',
-                                    'h1', 'h2', 'h3', 'h4',
-                                    '.card-title',
-                                    'span[class*="title"]',
-                                    'span[class*="Title"]'
-                                ];
-                                
-                                let titleEl = null;
-                                for (const sel of selectors) {
-                                    titleEl = container.querySelector(sel);
-                                    if (titleEl && titleEl.textContent.trim().length > 5) {
-                                        break;
-                                    }
-                                }
-                                
-                                if (titleEl) {
-                                    const titleText = titleEl.textContent.toLowerCase();
-                                    if (titleText.includes('musei') && titleText.includes('vaticani') && titleText.includes('biglietti')) {
-                                        found = true;
-                                        foundId = container.getAttribute('id').replace('ticket_', '');
-                                        foundTitle = titleEl.textContent.trim();
-                                    }
-                                }
-                            });
-                            
-                            return {found: found, id: foundId, title: foundTitle};
-                        }''')
-                        
-                        if musei_result['found']:
-                            musei_found = True
-                            logger.info(f"✅ 'Musei Vaticani' WITH TITLE found after {elapsed}s!")
-                            logger.info(f"   ID: {musei_result['id']}, Title: {musei_result['title']}")
-                            logger.info(f"⏱️ Waiting 5 more seconds for complete rendering...")
-                            # Give it 5 more seconds to fully render all elements
-                            await page.wait_for_timeout(5000)
-                            elapsed += 5
-                            break
-                        
-                        # Wait and check again
-                        await page.wait_for_timeout(check_interval * 1000)
-                        elapsed += check_interval
-                        logger.info(f"⏱️ Still waiting... ({elapsed}s / {max_wait}s)")
-                    
-                    if not musei_found:
-                        logger.warning(f"⚠️ 'Musei Vaticani' WITH TITLE did NOT appear after {elapsed}s")
-                        logger.warning(f"⚠️ Proceeding with extraction anyway - may use fallback methods")
-                    
+                    # Check how many tickets loaded
+                    ticket_count = await page.evaluate('''() => {
+                        return document.querySelectorAll('div[id^="ticket_"]').length;
+                    }''')
+                    logger.info(f"✅ Found {ticket_count} ticket containers after wait")
                     logger.info(f"⏱️ Total Monday wait time: {time.time() - start_time:.1f}s")
                 else:
                     logger.info("📅 Not a Monday - using standard extraction")
@@ -933,14 +875,100 @@ class HydraBot:
                 is_monday = False
             
             # Extract ticket IDs from the page with improved name detection
-            # ✅ IMPROVED: Multi-strategy extraction with Monday-specific enhancements
-            # ✅ NEW: Raw HTML parsing as fallback for edge cases
-            ids = await page.evaluate('''() => {
+            # ✅ MONDAY SPECIAL: Use raw HTML parsing for better extraction
+            if is_monday:
+                logger.info("🔍 MONDAY MODE: Using raw HTML extraction...")
+                
+                # Get the full HTML content
+                html_content = await page.content()
+                
+                # Save HTML for debugging
+                try:
+                    with open(f'/tmp/monday_page_{target_date.replace("/", "_")}.html', 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    logger.info(f"💾 Saved HTML to /tmp/monday_page_{target_date.replace('/', '_')}.html")
+                except:
+                    pass
+                
+                # Parse HTML to extract ALL ticket IDs and names
+                import re
+                ids = []
+                seen_ids = set()
+                
+                # Pattern 1: Find all div id="ticket_XXXXX"
+                ticket_pattern = re.compile(r'<div[^>]*id="ticket_(\d+)"[^>]*>', re.IGNORECASE)
+                ticket_matches = ticket_pattern.finditer(html_content)
+                
+                for match in ticket_matches:
+                    ticket_id = match.group(1)
+                    if ticket_id in seen_ids or ticket_id.startswith('dx_'):
+                        continue
+                    
+                    # Extract context around this ticket (2000 chars before and after)
+                    start_pos = max(0, match.start() - 2000)
+                    end_pos = min(len(html_content), match.end() + 3000)
+                    context = html_content[start_pos:end_pos]
+                    
+                    # Try multiple patterns to find the ticket name
+                    ticket_name = None
+                    
+                    # Pattern A: class="muvaTicketTitle"
+                    name_match = re.search(r'class="muvaTicketTitle"[^>]*>([^<]+)<', context)
+                    if name_match:
+                        ticket_name = name_match.group(1).strip()
+                    
+                    # Pattern B: <h1>, <h2>, <h3> tags
+                    if not ticket_name:
+                        name_match = re.search(r'<h[1-6][^>]*>([^<]{10,150})<', context)
+                        if name_match:
+                            text = name_match.group(1).strip()
+                            if '€' not in text and 'PRENOTA' not in text:
+                                ticket_name = text
+                    
+                    # Pattern C: Any element with "title" or "Title" in class
+                    if not ticket_name:
+                        name_match = re.search(r'class="[^"]*[Tt]itle[^"]*"[^>]*>([^<]{10,150})<', context)
+                        if name_match:
+                            text = name_match.group(1).strip()
+                            if '€' not in text and 'PRENOTA' not in text:
+                                ticket_name = text
+                    
+                    # Pattern D: Look for text between > and < that looks like a title
+                    if not ticket_name:
+                        # Find substantial text (15-150 chars, starts with capital)
+                        text_matches = re.findall(r'>([A-Z][^<]{15,150})<', context)
+                        for text in text_matches:
+                            text = text.strip()
+                            if ('€' not in text and 'PRENOTA' not in text and 
+                                'NON DISPONIBILI' not in text and 'BOOK' not in text):
+                                ticket_name = text
+                                break
+                    
+                    if ticket_name:
+                        # Clean up the name
+                        ticket_name = re.sub(r'\s+', ' ', ticket_name).strip()
+                        ticket_name = ticket_name.replace('&nbsp;', ' ')
+                        
+                        ids.append({
+                            'id': ticket_id,
+                            'name': ticket_name
+                        })
+                        seen_ids.add(ticket_id)
+                        logger.info(f"   📋 HTML: {ticket_id} | {ticket_name}")
+                
+                logger.info(f"🔢 HTML extraction found {len(ids)} tickets")
+                
+            else:
+                # Standard JavaScript extraction for non-Monday dates
+                ids = await page.evaluate('''() => {
                 const results = [];
                 const seenIds = new Set();
                 
+                console.log('🔍 Starting ticket extraction...');
+                
                 // STEP 1: Force expand ALL collapsible elements (critical for Mondays)
                 const expandButtons = document.querySelectorAll('[data-toggle="collapse"], .accordion-button, .btn-collapse, [aria-expanded="false"], .collapsed');
+                console.log(`Found ${expandButtons.length} expand buttons`);
                 expandButtons.forEach(btn => {
                     try {
                         btn.click();
@@ -949,6 +977,7 @@ class HydraBot:
                 
                 // Also try to show hidden elements
                 const hiddenElements = document.querySelectorAll('[style*="display: none"], [style*="display:none"], .d-none, .hidden');
+                console.log(`Found ${hiddenElements.length} hidden elements`);
                 hiddenElements.forEach(el => {
                     try {
                         el.style.display = 'block';
@@ -957,78 +986,122 @@ class HydraBot:
                 });
                 
                 // STEP 2: Extract from div containers with id="ticket_XXXXX" (PRIMARY METHOD)
-                // ✅ IMPROVED: AGGRESSIVE title search with multiple fallback strategies
                 const ticketContainers = document.querySelectorAll('div[id^="ticket_"]');
+                console.log(`Found ${ticketContainers.length} ticket containers`);
                 
-                ticketContainers.forEach(container => {
+                ticketContainers.forEach((container, index) => {
                     const containerId = container.getAttribute('id');
                     const ticketId = containerId ? containerId.replace('ticket_', '') : null;
                     
                     // Skip if ID is invalid or already seen
-                    if (!ticketId || ticketId.startsWith('dx_') || seenIds.has(ticketId)) return;
+                    if (!ticketId || ticketId.startsWith('dx_') || seenIds.has(ticketId)) {
+                        console.log(`Skipping container ${index}: invalid or duplicate ID`);
+                        return;
+                    }
                     
-                    // ✅ AGGRESSIVE TITLE SEARCH - Multiple strategies
-                    let titleEl = null;
+                    console.log(`Processing ticket ${ticketId}...`);
+                    
+                    // ✅ ULTRA-AGGRESSIVE TITLE SEARCH - 6 strategies
                     let ticketName = null;
                     
-                    // Strategy 1: Standard selectors
-                    titleEl = container.querySelector('.muvaTicketTitle');
-                    if (!titleEl) titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .ticket-title, span[class*="Title"]');
+                    // Strategy 1: .muvaTicketTitle class (standard)
+                    let titleEl = container.querySelector('.muvaTicketTitle');
+                    if (titleEl && titleEl.textContent.trim()) {
+                        ticketName = titleEl.textContent.trim();
+                        console.log(`  Strategy 1 (muvaTicketTitle): ${ticketName}`);
+                    }
                     
-                    // Strategy 2: Search in nested app-ticket-details
-                    if (!titleEl || !titleEl.textContent.trim()) {
+                    // Strategy 2: Standard heading tags
+                    if (!ticketName) {
+                        titleEl = container.querySelector('h1, h2, h3, h4, h5, h6');
+                        if (titleEl && titleEl.textContent.trim()) {
+                            ticketName = titleEl.textContent.trim();
+                            console.log(`  Strategy 2 (heading): ${ticketName}`);
+                        }
+                    }
+                    
+                    // Strategy 3: app-ticket-details component
+                    if (!ticketName) {
                         const detailsEl = container.querySelector('app-ticket-details');
                         if (detailsEl) {
-                            titleEl = detailsEl.querySelector('.muvaTicketTitle, h1, h2, h3, h4, span[class*="title"], span[class*="Title"]');
+                            titleEl = detailsEl.querySelector('.muvaTicketTitle, h1, h2, h3, h4, span[class*="title"], span[class*="Title"], div[class*="title"], div[class*="Title"]');
+                            if (titleEl && titleEl.textContent.trim()) {
+                                ticketName = titleEl.textContent.trim();
+                                console.log(`  Strategy 3 (app-ticket-details): ${ticketName}`);
+                            }
                         }
                     }
                     
-                    // Strategy 3: Search ANY span with substantial text (avoid prices/buttons)
-                    if (!titleEl || !titleEl.textContent.trim()) {
-                        const allSpans = container.querySelectorAll('span');
-                        for (const span of allSpans) {
-                            const text = span.textContent.trim();
+                    // Strategy 4: ANY element with "title" or "Title" in class name
+                    if (!ticketName) {
+                        const titleElements = container.querySelectorAll('[class*="title"], [class*="Title"], [class*="name"], [class*="Name"]');
+                        for (const el of titleElements) {
+                            const text = el.textContent.trim();
+                            if (text.length > 10 && !text.includes('€') && !text.includes('PRENOTA') && !text.includes('BOOK') && !text.includes('NON DISPONIBILI')) {
+                                ticketName = text;
+                                console.log(`  Strategy 4 (class name): ${ticketName}`);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Strategy 5: Search ALL spans for substantial text
+                    if (!ticketName) {
+                        const allSpans = container.querySelectorAll('span, div, p');
+                        for (const el of allSpans) {
+                            const text = el.textContent.trim();
                             // Must be substantial text, not a price or button
-                            if (text.length > 10 && !text.includes('€') && !text.includes('PRENOTA') && !text.includes('BOOK')) {
-                                titleEl = span;
+                            if (text.length > 15 && text.length < 200 && 
+                                !text.includes('€') && 
+                                !text.includes('PRENOTA') && 
+                                !text.includes('BOOK') && 
+                                !text.includes('NON DISPONIBILI') &&
+                                !text.includes('NON PRENOTABILE') &&
+                                !text.match(/^\\d+$/)) {  // Not just numbers
+                                ticketName = text;
+                                console.log(`  Strategy 5 (span search): ${ticketName}`);
                                 break;
                             }
                         }
                     }
                     
-                    // Strategy 4: Search in any child element with text
-                    if (!titleEl || !titleEl.textContent.trim()) {
-                        const allElements = container.querySelectorAll('*');
-                        for (const el of allElements) {
-                            // Get direct text content (not nested)
-                            const text = Array.from(el.childNodes)
-                                .filter(node => node.nodeType === Node.TEXT_NODE)
-                                .map(node => node.textContent.trim())
-                                .join(' ');
-                            if (text.length > 10 && !text.includes('€')) {
-                                titleEl = el;
-                                break;
-                            }
+                    // Strategy 6: Get ALL text from container and extract first meaningful line
+                    if (!ticketName) {
+                        const allText = container.innerText || container.textContent || '';
+                        const lines = allText.split('\\n')
+                            .map(l => l.trim())
+                            .filter(l => l.length > 15 && l.length < 200)
+                            .filter(l => !l.includes('€') && !l.includes('PRENOTA') && !l.includes('BOOK'));
+                        
+                        if (lines.length > 0) {
+                            ticketName = lines[0];
+                            console.log(`  Strategy 6 (text extraction): ${ticketName}`);
                         }
                     }
                     
-                    ticketName = titleEl ? titleEl.textContent.trim() : null;
-                    
-                    // Only add if we got a real name
-                    if (ticketName && ticketName.length > 5 && ticketName !== 'Unknown') {
+                    // Add to results if we found a name
+                    if (ticketName && ticketName.length > 5) {
+                        // Clean up the name (remove extra whitespace, newlines)
+                        ticketName = ticketName.replace(/\\s+/g, ' ').trim();
+                        
                         results.push({
                             id: ticketId,
                             name: ticketName
                         });
                         seenIds.add(ticketId);
+                        console.log(`  ✅ Added: ${ticketId} - ${ticketName}`);
+                    } else {
+                        console.log(`  ❌ No name found for ${ticketId}`);
                     }
                 });
                 
-                // STEP 3: Parse raw HTML for ticket IDs (FALLBACK for Monday issues)
-                // This catches tickets that JavaScript extraction misses
+                console.log(`After container extraction: ${results.length} tickets`);
+                
+                // STEP 3: Parse raw HTML for ticket IDs (FALLBACK)
                 const htmlContent = document.documentElement.innerHTML;
                 const ticketIdRegex = /id="ticket_(\\d+)"/g;
                 let match;
+                let htmlMatches = 0;
                 
                 while ((match = ticketIdRegex.exec(htmlContent)) !== null) {
                     const ticketId = match[1];
@@ -1037,56 +1110,39 @@ class HydraBot:
                     
                     // Find the ticket name near this ID in the HTML
                     const idPosition = match.index;
-                    const contextStart = Math.max(0, idPosition - 500);
-                    const contextEnd = Math.min(htmlContent.length, idPosition + 2000);
+                    const contextStart = Math.max(0, idPosition - 1000);
+                    const contextEnd = Math.min(htmlContent.length, idPosition + 3000);
                     const context = htmlContent.substring(contextStart, contextEnd);
                     
-                    // Look for muvaTicketTitle in the context
-                    const titleMatch = context.match(/class="muvaTicketTitle"[^>]*>([^<]+)</);
-                    if (titleMatch) {
-                        const ticketName = titleMatch[1].trim();
-                        if (ticketName && ticketName.length > 5) {
-                            results.push({
-                                id: ticketId,
-                                name: ticketName
-                            });
-                            seenIds.add(ticketId);
+                    // Try multiple regex patterns to find the title
+                    const patterns = [
+                        /class="muvaTicketTitle"[^>]*>([^<]+)</,
+                        /<h[1-6][^>]*>([^<]+)</,
+                        /class="[^"]*[Tt]itle[^"]*"[^>]*>([^<]+)</,
+                        /<span[^>]*>([A-Z][^<]{15,150})</  // Capitalized text 15-150 chars
+                    ];
+                    
+                    for (const pattern of patterns) {
+                        const titleMatch = context.match(pattern);
+                        if (titleMatch) {
+                            const ticketName = titleMatch[1].trim();
+                            if (ticketName && ticketName.length > 10 && !ticketName.includes('€')) {
+                                results.push({
+                                    id: ticketId,
+                                    name: ticketName
+                                });
+                                seenIds.add(ticketId);
+                                htmlMatches++;
+                                console.log(`  HTML extraction: ${ticketId} - ${ticketName}`);
+                                break;
+                            }
                         }
                     }
                 }
                 
-                // STEP 4: Fallback to data-cy buttons if still no results
-                if (results.length === 0) {
-                    const buttons = document.querySelectorAll('[data-cy^="bookTicket_"]');
-                    buttons.forEach(btn => {
-                        const dataCy = btn.getAttribute('data-cy');
-                        const id = dataCy ? dataCy.replace('bookTicket_', '') : null;
-                        
-                        if (!id || seenIds.has(id)) return;
-                        
-                        // Find title by searching up the DOM tree
-                        let parent = btn.parentElement;
-                        let name = null;
-                        
-                        for (let i = 0; i < 10 && parent; i++) {
-                            const titleEl = parent.querySelector('.muvaTicketTitle, h1, h2, h3, h4, .card-title');
-                            if (titleEl && titleEl.textContent.trim()) {
-                                name = titleEl.textContent.trim();
-                                break;
-                            }
-                            parent = parent.parentElement;
-                        }
-                        
-                        if (name) {
-                            results.push({
-                                id: id,
-                                name: name
-                            });
-                            seenIds.add(id);
-                        }
-                    });
-                }
+                console.log(`HTML extraction added ${htmlMatches} tickets`);
                 
+                console.log(`✅ Total extracted: ${results.length} tickets`);
                 return results;
             }''')
             

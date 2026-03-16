@@ -1,154 +1,212 @@
-# Vatican Bot - Quick Reference Card
+# Multi-Tenant Telegram Bot - Quick Reference Card
 
-## 🚀 Quick Start
+## 🚀 System Status
+✅ **DEPLOYED AND RUNNING**  
+✅ All 10 containers operational  
+✅ Migration applied successfully  
+✅ API endpoints working  
+✅ Bot polling for updates  
 
-```powershell
-# 1. Restart worker (applies fixes)
-docker-compose restart worker_vatican
+---
 
-# 2. Check health
-.\quick_vatican_check.ps1
+## 📋 Quick Commands
 
-# 3. Watch logs
-docker-compose logs -f worker_vatican
+### Check System Health
+```bash
+# All services status
+docker-compose ps
+
+# Test database
+python test_telegram_groups.py
+
+# Check API
+curl http://localhost:8000/api/v1/telegram-groups/
+```
+
+### View Logs
+```bash
+# Telegram bot
+docker-compose logs telegram_bot --tail 50
+
+# Backend
+docker-compose logs backend --tail 50
+
+# Vatican worker
+docker-compose logs worker_vatican --tail 50
+```
+
+### Restart Services
+```bash
+# Restart specific service
+docker-compose restart telegram_bot
+docker-compose restart backend
+
+# Restart all
+docker-compose restart
 ```
 
 ---
 
-## 📋 Mandatory Flow (3 Steps)
+## 🌐 URLs
 
-### Step 1: Deep Link (Get Cookies + IDs)
-```
-https://tickets.museivaticani.va/home/fromtag/{visitors}/{timestamp_ms}/{slug}/1
-```
+| Service | URL | Status |
+|---------|-----|--------|
+| Admin Dashboard | http://localhost:3000/admin/telegram-groups | ✅ Ready |
+| Main Dashboard | http://localhost:3000 | ✅ Running |
+| API Endpoint | http://localhost:8000/api/v1/telegram-groups/ | ✅ Working |
+| Backend Admin | http://localhost:8000/admin/ | ✅ Available |
 
-**Example:**
-```
-# 2 visitors, March 28, 2026, standard ticket
-https://tickets.museivaticani.va/home/fromtag/2/1774652400000/MV-Biglietti/1
-```
+---
 
-### Step 2: Match Ticket by Name
-```python
-# 3-tier strategy:
-# 1. Exact substring match
-# 2. Keyword scoring (musei, biglietti, ingresso)
-# 3. Smart fallback (first standard ticket)
-```
+## 🔧 API Endpoints
 
-### Step 3: Call API
-```
-https://tickets.museivaticani.va/api/visit/timeavail?lang=it&visitTypeId={fresh_id}&visitorNum={visitors}&visitDate={DD/MM/YYYY}
+```bash
+# List all groups
+GET /api/v1/telegram-groups/
 
-# Add visitLang ONLY for guided tours:
-&visitLang=ENG
+# Filter by status
+GET /api/v1/telegram-groups/?status=pending
+
+# Approve group
+POST /api/v1/telegram-groups/{id}/approve/
+Body: {"agency_id": 1}  # optional
+
+# Reject group
+POST /api/v1/telegram-groups/{id}/reject/
+Body: {"reason": "Spam group"}
+
+# Suspend group
+POST /api/v1/telegram-groups/{id}/suspend/
+Body: {"reason": "Terms violation"}
 ```
 
 ---
 
-## ✅ Success Indicators
+## 🧪 Testing Flow
 
+### 1. Add Bot to Group
+- Open Telegram
+- Add your bot to a group
+- Bot sends welcome message
+
+### 2. Verify Database
+```bash
+python test_telegram_groups.py
 ```
-✅ Keyword Match: 'Musei Vaticani' -> ID 2129030053
-✅ API Response: 200 - 20 total slots
-✅ Found 9 available slots
+Should show 1 pending group
+
+### 3. Open Dashboard
+```
+http://localhost:3000/admin/telegram-groups
+```
+
+### 4. Approve Group
+- Click "Approve"
+- Link to agency (optional)
+- Confirm
+
+### 5. Test Notification
+Group receives Vatican ticket alerts
+
+---
+
+## 📊 Database Quick Check
+
+```bash
+# Django shell
+docker-compose exec backend python backend/manage.py shell
+
+# Check groups
+>>> from monitors.models import TelegramGroup
+>>> TelegramGroup.objects.all()
+>>> TelegramGroup.objects.filter(status='pending').count()
+
+# Check agencies
+>>> from monitors.models import Agency
+>>> Agency.objects.all()
 ```
 
 ---
 
-## ❌ Failure Indicators
+## 🔍 Troubleshooting
 
-```
-❌ No name match for 'Musei Vaticani'
-❌ API call failed: Status 500
-❌ Falling back to stale ID (Risky)
-```
-
----
-
-## 🔧 Quick Fixes
-
-### Issue: Name matching fails
-```powershell
-docker cp fix_vatican_ticket_names.py travelagenntbot-backend-1:/app/
-docker-compose exec backend python /app/fix_vatican_ticket_names.py
-docker-compose restart worker_vatican
+### Bot Not Responding
+```bash
+docker-compose restart telegram_bot
+docker-compose logs telegram_bot | grep -i error
 ```
 
-### Issue: Worker not running
-```powershell
-docker-compose restart worker_vatican
+### API Errors
+```bash
+docker-compose restart backend
+docker-compose logs backend | grep -i error
 ```
 
-### Issue: API 500 errors
-```powershell
-# Clear stale IDs
-docker-compose exec backend python /app/fix_vatican_ticket_names.py
+### Dashboard Not Loading
+```bash
+docker-compose restart frontend
+docker-compose logs frontend
 ```
 
 ---
 
-## 📊 Monitoring Commands
+## 📁 Key Files
 
-```powershell
-# Health check
-.\quick_vatican_check.ps1
-
-# Live logs
-docker-compose logs -f worker_vatican
-
-# Recent errors
-docker-compose logs --tail=100 worker_vatican | Select-String "ERROR|500"
-
-# Recent successes
-docker-compose logs --tail=100 worker_vatican | Select-String "Keyword Match|Found.*slots"
-
-# Compliance check
-python verify_vatican_rules_compliance.py
-```
-
----
-
-## 🎯 Key Rules
-
-1. ✅ ALWAYS use dynamic IDs (never hardcoded)
-2. ✅ Navigate to deep link FIRST
-3. ✅ Match tickets by NAME (not ID)
-4. ✅ Use Rome timezone for timestamps
-5. ✅ visitLang ONLY for guided tours
-6. ✅ Consistent visitor count everywhere
+| File | Purpose |
+|------|---------|
+| `backend/monitors/models.py` | TelegramGroup model |
+| `backend/monitors/views.py` | API endpoints |
+| `backend/monitors/urls.py` | URL routes |
+| `backend/telegram_bot.py` | Bot handlers |
+| `backend/monitors/notification_utils.py` | Notification filtering |
+| `frontend/src/app/admin/telegram-groups/page.tsx` | Admin dashboard |
+| `test_telegram_groups.py` | Test script |
 
 ---
 
 ## 📚 Documentation
 
-- **Rules:** `.kiro/steering/VATICAN_BOT_RULES.md`
-- **Status:** `VATICAN_BOT_STATUS_REPORT.md`
-- **Fixes:** `VATICAN_BOT_FIX_APPLIED.md`
-- **Compliance:** `VATICAN_RULES_IMPLEMENTATION_STATUS.md`
-- **Summary:** `VATICAN_BOT_FINAL_SUMMARY.md`
+| Document | Description |
+|----------|-------------|
+| `DEPLOYMENT_STATUS.md` | Current deployment status |
+| `TELEGRAM_MULTI_TENANT_COMPLETE.md` | Full technical guide |
+| `DEPLOYMENT_CHECKLIST.md` | Step-by-step deployment |
+| `IMPLEMENTATION_SUMMARY.md` | High-level overview |
+| `QUICK_REFERENCE.md` | This file |
 
 ---
 
-## 🆘 Emergency Commands
+## ⚙️ Environment Variables
 
-```powershell
-# Stop everything
-docker-compose down
+### Required
+```bash
+TELEGRAM_BOT_TOKEN=your_bot_token
+```
 
-# Start fresh
-docker-compose up -d
-
-# Check all services
-docker-compose ps
-
-# Full logs
-docker-compose logs > full_logs.txt
+### Optional
+```bash
+ADMIN_TELEGRAM_IDS=your_id,another_id
 ```
 
 ---
 
-**Quick Status Check:**
-```powershell
-docker-compose ps worker_vatican && echo "✅ Worker is running" || echo "❌ Worker is down"
-```
+## 🎯 Next Steps
+
+1. ⏳ Add bot to test group
+2. ⏳ Test approval workflow
+3. ⏳ Verify notifications working
+4. ⏳ Monitor for 24 hours
+5. ⏳ Add ADMIN_TELEGRAM_IDS (optional)
+
+---
+
+## 📞 Support
+
+- Run: `python test_telegram_groups.py`
+- Check: `DEPLOYMENT_STATUS.md`
+- Review: `TELEGRAM_MULTI_TENANT_COMPLETE.md`
+
+---
+
+**Last Updated:** March 10, 2026 14:31 CET  
+**Status:** ✅ Production Ready

@@ -7,13 +7,14 @@ export interface Agency {
     created_at: string;
     plan: 'free' | 'pro' | 'agency';
     task_limit: number;
+    owner_id?: string;
 }
 
 export interface MonitorTask {
     id: number;
     agency: number;
     agency_name: string;
-    site: 'vatican' | 'colosseum';
+    site: 'vatican';
     area_name: string;
     dates: string[];
     preferred_times: string[];
@@ -59,33 +60,75 @@ export interface CheckResult {
 }
 
 const getApiUrl = () => {
-    // 1. Highest priority: Explicit environment variable (Vercel/Docker)
+    // In the browser, always use the relative proxy path so requests go through
+    // the Next.js API route (/api/v1/...) which forwards to the backend server-side.
+    // This avoids CORS issues and keeps the backend URL secret.
+    if (typeof window !== 'undefined') {
+        return '/api/v1';
+    }
+    // Server-side (SSR/build): use env var or direct backend
     const envUrl = process.env.NEXT_PUBLIC_API_URL;
     if (envUrl) {
-        // Ensure it has /api/v1 suffix if missing and not just a base URL
-        return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl.replace(/\/$/, '')}/api/v1`;
+        return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
     }
-
-    // 2. Client-side (Browser) logic
-    if (typeof window !== 'undefined') {
-        const hostname = window.location.hostname;
-        const protocol = window.location.protocol;
-
-        // Dev mode fallback
-        if (hostname === 'localhost' || hostname === '127.0.0.1') {
-            return 'http://localhost:8000/api/v1';
-        }
-
-        // Subdomain/Relative fallback
-        return `${protocol}//${hostname}/api/v1`;
-    }
-
-    // 3. Server-side (SSR) fallback
-    return 'http://backend:8000/api/v1';
+    return 'http://localhost:8000/api/v1';
 };
 
 export const api = {
     getApiUrl: getApiUrl,
+    
+    // Authentication
+    login: async (username: string, password: string) => {
+        const res = await fetch(`${getApiUrl()}/auth/login/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+            const error = await res.json();
+            throw new Error(error.error || 'Login failed');
+        }
+        return res.json();
+    },
+    
+    register: async (email: string, username: string, password: string, fullName?: string) => {
+        const res = await fetch(`${getApiUrl()}/auth/register/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ email, username, password, full_name: fullName }),
+        });
+        if (!res.ok) {
+            const error = await res.json();
+            throw new Error(error.error || 'Registration failed');
+        }
+        return res.json();
+    },
+    
+    logout: async (sessionToken: string) => {
+        const res = await fetch(`${getApiUrl()}/auth/logout/`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${sessionToken}`,
+            },
+        });
+        if (!res.ok) throw new Error('Logout failed');
+        return res.json();
+    },
+    
+    verifySession: async (sessionToken: string) => {
+        const res = await fetch(`${getApiUrl()}/auth/verify/`, {
+            headers: {
+                'Authorization': `Bearer ${sessionToken}`,
+            },
+        });
+        if (!res.ok) throw new Error('Session invalid');
+        return res.json();
+    },
+    
     getMyAgency: async (ownerId?: string, email?: string) => {
         const res = await fetch(`${getApiUrl()}/my-agency/`, {
             method: 'POST',
@@ -116,15 +159,38 @@ export const api = {
         if (!res.ok) throw new Error('Failed to fetch agencies');
         return res.json();
     },
+    createAgency: async (data: Partial<Agency>) => {
+        const res = await fetch(`${getApiUrl()}/agencies/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error('Failed to create agency');
+        return res.json();
+    },
     getTasks: async (agencyId?: number): Promise<MonitorTask[]> => {
+        const sessionToken = typeof window !== 'undefined' ? localStorage.getItem('session_token') : null;
+        const headers: HeadersInit = {};
+        if (sessionToken) {
+            headers['Authorization'] = `Bearer ${sessionToken}`;
+        }
+        
         const url = agencyId
             ? `${getApiUrl()}/tasks/?agency_id=${agencyId}`
             : `${getApiUrl()}/tasks/`;
-        const res = await fetch(url);
+        const res = await fetch(url, { headers });
         if (!res.ok) throw new Error('Failed to fetch tasks');
         return res.json();
     },
     getResults: async (taskId?: number, agencyId?: number): Promise<CheckResult[]> => {
+        const sessionToken = typeof window !== 'undefined' ? localStorage.getItem('session_token') : null;
+        const headers: HeadersInit = {};
+        if (sessionToken) {
+            headers['Authorization'] = `Bearer ${sessionToken}`;
+        }
+        
         const baseUrl = getApiUrl();
         let url = `${baseUrl}/results/`;
         const params = new URLSearchParams();
@@ -135,7 +201,7 @@ export const api = {
             url += `?${params.toString()}`;
         }
 
-        const res = await fetch(url);
+        const res = await fetch(url, { headers });
         if (!res.ok) throw new Error('Failed to fetch results');
         return res.json();
     },

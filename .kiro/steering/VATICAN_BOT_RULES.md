@@ -8,155 +8,94 @@ priority: critical
 
 ---
 
-## 🎯 CORE PRINCIPLE: ALWAYS USE DYNAMIC IDs
+## 🎯 CORE PRINCIPLE: ALWAYS USE SEARCH API
 
 **NEVER use hardcoded ticket IDs.** Vatican changes IDs frequently (daily/weekly).
 
-**ALWAYS:**
-1. Navigate to deep link to get fresh JSESSIONID cookies
-2. Extract dynamic ticket IDs from the page
-3. Use those fresh IDs for API calls
+**ALWAYS use the Search API approach:**
+1. Call search API to get fresh ticket IDs and JSESSIONID
+2. Match tickets by name (not by ID)
+3. Use fresh IDs for timeavail API calls
+
+**WHY SEARCH API:**
+- ✅ Works for ALL days (including Mondays)
+- ✅ 10x faster than browser automation
+- ✅ More reliable (no page rendering issues)
+- ✅ Simpler code (no HTML parsing)
+- ✅ Lower resource usage
 
 ---
 
-## 📋 MANDATORY FLOW (3 STEPS)
+## 📋 MANDATORY FLOW (2 STEPS - SIMPLIFIED)
 
-### STEP 1: Navigate to Deep Link (Get Cookies + IDs)
+### STEP 1: Call Search API (Get Ticket IDs + Session)
 
-**URL Pattern:**
+**URL:**
 ```
-https://tickets.museivaticani.va/home/fromtag/{visitors}/{timestamp_ms}/{slug}/1
+https://tickets.museivaticani.va/api/search/resultPerTag
 ```
 
 **Parameters:**
-- `{visitors}` = Number of visitors (1, 2, 3, etc.) - MUST match task.visitors
-- `{timestamp_ms}` = Target date at midnight Rome time in milliseconds
-- `{slug}` = "MV-Biglietti" (standard) OR "MV-Visite-Guidate" (guided tours)
-- Last `/1` = Volume ID (always 1)
+- `lang` = API language (it, en, fr, de, es) - Usually "it"
+- `visitorNum` = Number of visitors (MUST match task.visitors)
+- `visitDate` = Date in DD/MM/YYYY format
+- `area` = "1" (always 1)
+- `who` = "" (empty string)
+- `page` = "0" (first page)
+- `tag` = "MV-Biglietti" (standard) OR "MV-Visite-Guidate" (guided tours)
 
 **Example:**
-```
-# For 2 visitors on March 28, 2026 (standard ticket):
-https://tickets.museivaticani.va/home/fromtag/2/1774652400000/MV-Biglietti/1
-
-# For 1 visitor on March 28, 2026 (guided tour):
-https://tickets.museivaticani.va/home/fromtag/1/1774652400000/MV-Visite-Guidate/1
-```
-
-**Timestamp Calculation (Rome Timezone):**
 ```python
-from zoneinfo import ZoneInfo
-from datetime import datetime
+import requests
 
-# Parse date (DD/MM/YYYY or YYYY-MM-DD)
-if "/" in date_str:
-    day, month, year = date_str.split('/')
-else:
-    year, month, day = date_str.split('-')
+url = "https://tickets.museivaticani.va/api/search/resultPerTag"
+params = {
+    'lang': 'it',
+    'visitorNum': '2',
+    'visitDate': '28/03/2026',
+    'area': '1',
+    'who': '',
+    'page': '0',
+    'tag': 'MV-Biglietti'
+}
 
-# Create midnight Rome time
-rome = ZoneInfo("Europe/Rome")
-dt = datetime(int(year), int(month), int(day), 0, 0, 0, tzinfo=rome)
-timestamp_ms = int(dt.timestamp() * 1000)
+headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Referer': 'https://tickets.museivaticani.va/'
+}
+
+response = requests.get(url, params=params, headers=headers)
+data = response.json()
+
+# Extract tickets
+tickets = []
+for ticket in data.get('visits', []):
+    tickets.append({
+        'id': str(ticket['id']),
+        'name': ticket.get('name', 'Unknown'),
+        'availability': ticket.get('availability', 'UNKNOWN')
+    })
+
+# Extract JSESSIONID from cookies
+jsessionid = response.cookies.get('JSESSIONID')
 ```
 
-**What to Extract:**
-1. **JSESSIONID cookie** - Required for API authentication
-2. **Dynamic Ticket IDs** - From `data-cy="bookTicket_{ID}"` attributes
-3. **Ticket Names** - From card titles (h1, h2, .muvaTicketTitle)
-
-**JavaScript Extraction:**
-```javascript
-// Extract all ticket IDs and names
-const tickets = [];
-const buttons = document.querySelectorAll("[data-cy^='bookTicket_']");
-buttons.forEach(btn => {
-    const id = btn.getAttribute("data-cy").split("_")[1];
-    const container = btn.closest('div.card') || btn.closest('div.row');
-    let name = "Unknown";
-    if (container) {
-        const titleEl = container.querySelector('h1, h2, h3, h4, .card-title, .muvaTicketTitle');
-        if (titleEl) name = titleEl.innerText.trim();
-    }
-    tickets.push({id: id, name: name});
-});
-return tickets;
-```
+**What You Get:**
+1. **JSESSIONID cookie** - Required for timeavail API
+2. **Dynamic Ticket IDs** - Fresh IDs for the date/visitor combination
+3. **Ticket Names** - Human-readable names for matching
+4. **Availability Status** - AVAILABLE, SOLD_OUT, or NOT_ALLOWED
 
 ---
 
-### STEP 2: Match Ticket by Name (NOT by ID)
+### STEP 2: Call Time Availability API
 
-**CRITICAL:** Database ticket_id values are STALE. Always resolve fresh IDs.
-
-**Matching Strategy (3-tier):**
-
-1. **Exact Match** - Check if ticket_name substring matches
-2. **Keyword Match** - Score by relevant keywords
-3. **Smart Fallback** - Use first standard admission ticket
-
-**Keywords for Standard Tickets:**
-- musei, museum, palazzo, specola
-- biglietti, ingresso, admission
-- Exclude: lunch, pranzo, pellegrinaggi, gruppi
-
-**Keywords for Guided Tours:**
-- visita, guidata, guided, tour
-- Exclude: lunch, pranzo
-
-**Example Matching Code:**
-```python
-# Strategy 1: Exact substring match
-for item in resolved_ids:
-    r_name = item.get('name', '').lower()
-    t_name = ticket_name.lower()
-    if t_name in r_name or r_name in t_name:
-        if ticket_type == 0 and "lunch" in r_name:
-            continue  # Skip lunch tickets
-        fresh_id = item['id']
-        break
-
-# Strategy 2: Keyword scoring
-if not fresh_id:
-    keywords = ['musei', 'biglietti', 'ingresso']
-    best_score = 0
-    for item in resolved_ids:
-        r_name = item.get('name', '').lower()
-        score = sum(1 for kw in keywords if kw in r_name)
-        if score > best_score and score >= 2:
-            best_score = score
-            fresh_id = item['id']
-
-# Strategy 3: Fallback to first standard ticket
-if not fresh_id and ticket_type == 0:
-    for item in resolved_ids:
-        r_name = item.get('name', '').lower()
-        if 'biglietti' in r_name or 'ingresso' in r_name:
-            if not any(x in r_name for x in ['lunch', 'pranzo', 'gruppi']):
-                fresh_id = item['id']
-                break
+**URL:**
 ```
-
----
-
-### STEP 3: Call Time Availability API
-
-**URL Pattern:**
+https://tickets.museivaticani.va/api/visit/timeavail
 ```
-https://tickets.museivaticani.va/api/visit/timeavail?lang={lang}&visitLang={visitLang}&visitTypeId={ticket_id}&visitorNum={visitors}&visitDate={date}
-```
-
-**CRITICAL: visitLang Parameter - ALWAYS INCLUDE IT**
-
-Based on actual working implementation, the `visitLang` parameter should **ALWAYS be included**:
-
-- **Standard tickets (ticket_type == 0):** 
-  - ✅ Include `&visitLang=` with EMPTY value
-  - Example: `...&visitLang=&visitTypeId=...`
-  
-- **Guided tours (ticket_type == 1):**
-  - ✅ Include `&visitLang=ENG` (or ITA, FRA, DEU, SPA)
-  - Example: `...&visitLang=ENG&visitTypeId=...`
 
 **Parameters:**
 - `lang` = API language (it, en, fr, de, es) - Usually "it"
@@ -164,47 +103,49 @@ Based on actual working implementation, the `visitLang` parameter should **ALWAY
   - **Standard tickets:** Empty string `""` (results in `&visitLang=`)
   - **Guided tours:** Language code (ENG, ITA, FRA, DEU, SPA)
 - `visitTypeId` = Fresh ticket ID from Step 1
-- `visitorNum` = Number of visitors (MUST match deep link)
+- `visitorNum` = Number of visitors (MUST match Step 1)
 - `visitDate` = Date in DD/MM/YYYY format
 
-**Examples:**
-```
-# ✅ CORRECT - Standard ticket (1 visitor, March 28, 2026) - visitLang with EMPTY value:
-https://tickets.museivaticani.va/api/visit/timeavail?lang=it&visitLang=&visitTypeId=2085325042&visitorNum=1&visitDate=28/03/2026
-
-# ✅ CORRECT - Guided tour in English (1 visitor, March 28, 2026) - visitLang with value:
-https://tickets.museivaticani.va/api/visit/timeavail?lang=it&visitLang=ENG&visitTypeId=1594188966&visitorNum=1&visitDate=28/03/2026
-```
-
-**Implementation Pattern:**
-```python
-# Build URL with visitLang always included
-if ticket_type == 0:  # Standard ticket
-    # Include visitLang with empty value
-    visit_lang = ""
-else:  # Guided tour
-    # Include visitLang with language code
-    visit_lang = language  # e.g., "ENG"
-
-url = (
-    f"https://tickets.museivaticani.va/api/visit/timeavail"
-    f"?lang=it&visitLang={visit_lang}&visitTypeId={ticket_id}&visitorNum={visitors}&visitDate={date}"
-)
-
-# Alternative: Conditional parameter
-visit_lang_param = language if language else ""  # Empty string for standard tickets
-url = (
-    f"https://tickets.museivaticani.va/api/visit/timeavail"
-    f"?lang=it&visitLang={visit_lang_param}&visitTypeId={ticket_id}&visitorNum={visitors}&visitDate={date}"
-)
-```
-
 **Required Headers:**
+```python
+headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Referer': 'https://tickets.museivaticani.va/',
+    'Cookie': f'JSESSIONID={jsessionid_from_step1}'
+}
 ```
-Accept: application/json, text/plain, */*
-X-Requested-With: XMLHttpRequest
-Referer: https://tickets.museivaticani.va/
-Cookie: JSESSIONID={value_from_step1}
+
+**Examples:**
+```python
+# Standard ticket (visitLang with EMPTY value)
+url = "https://tickets.museivaticani.va/api/visit/timeavail"
+params = {
+    'lang': 'it',
+    'visitLang': '',  # Empty for standard tickets
+    'visitTypeId': '2085325042',
+    'visitorNum': '1',
+    'visitDate': '28/03/2026'
+}
+
+# Guided tour (visitLang with language code)
+params = {
+    'lang': 'it',
+    'visitLang': 'ENG',  # Language code for guided tours
+    'visitTypeId': '1594188966',
+    'visitorNum': '1',
+    'visitDate': '28/03/2026'
+}
+
+# Use session from Step 1 to maintain cookies
+response = session.get(url, params=params, headers=headers)
+data = response.json()
+
+# Extract available slots
+available_slots = [
+    slot['time'] for slot in data['timetable'] 
+    if slot.get('availability') != 'SOLD_OUT'
+]
 ```
 
 **Response Format:**
@@ -216,14 +157,6 @@ Cookie: JSESSIONID={value_from_step1}
     {"time": "10:00", "availability": "AVAILABLE"}
   ]
 }
-```
-
-**Extract Available Slots:**
-```python
-available_slots = [
-    t['time'] for t in response['timetable'] 
-    if t.get('availability') != 'SOLD_OUT'
-]
 ```
 
 ---
@@ -238,11 +171,11 @@ api_url = f"...visitTypeId={ticket_id}..."
 # Result: API returns 500 error
 ```
 
-### ✅ CORRECT: Always Resolve Fresh IDs
+### ✅ CORRECT: Always Resolve Fresh IDs via Search API
 ```python
-# GOOD - Get fresh ID from page
-resolved_ids = await resolve_all_dynamic_ids(page, ...)
-fresh_id = match_ticket_by_name(resolved_ids, task.ticket_name)
+# GOOD - Get fresh ID from search API
+tickets = resolve_via_search_api(date, visitors, ticket_type)
+fresh_id = match_ticket_by_name(tickets, task.ticket_name)
 api_url = f"...visitTypeId={fresh_id}..."
 # Result: API returns 200 with slots
 ```

@@ -2,7 +2,7 @@
   "cookies": [
     {
       "name": "JSESSIONID",
-      "value": "98B7ADA5C73071063725EF27AC894E8A",
+      "value": "BF66EFD85FC374ACE6ABEAB43B3AC23E",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -19,245 +19,228 @@
       "httpOnly": false,
       "secure": false,
       "sameSite": "Lax"
-    },
-    {
-      "name": "SERVERID",
-      "value": "02|aahre",
-      "domain": "tickets.museivaticani.va",
-      "path": "/",
-      "expires": -1,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
     }
   ],
   "ids_cache": {
-    "2026-03-29": [
-      {
-        "id": "2133856738",
-        "name": "Visite Guidate Singoli - Musei Vaticani - Domenica"
-      },
-      {
-        "id": "1166869941",
-        "name": "Specola Vaticana - Visita Guidata Gruppi"
-      },
-      {
-        "id": "314769674",
-        "name": "Palazzo Papale - Cupole Astronomiche"
-      },
-      {
-        "id": "746564134",
-        "name": "Palazzo Papale - Biglietti d'ingresso"
-      },
-      {
-        "id": "1189847247",
-        "name": "Palazzo Papale - Visita Guidata Gruppi"
-      },
-      {
-        "id": "2041947514",
-        "name": "Palazzo Papale - Reparti Chiusi"
-      },
-      {
-        "id": "1155381288",
-        "name": "Specola Vaticana - Pellegrinaggi - Visita Guidata Gruppi"
-      },
-      {
-        "id": "1178358594",
-        "name": "Palazzo Papale - Pellegrinaggi - Biglietti d'ingresso"
-      },
-      {
-        "id": "1621641707",
-        "name": "Palazzo Papale - Pellegrinaggi - Visita Guidata Gruppi"
-      },
-      {
-        "id": "2145345391",
-        "name": "Borgo Laudato si' - Mezzo Ecologico"
-      }
-    ],
-    "2026-03-29_1_0": {
-      "ids": [
-        {
-          "id": "876181747",
-          "name": "Musei Vaticani - Biglietti d'ingresso"
-        },
-        {
-          "id": "1347383909",
-          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
-        },
-        {
-          "id": "714288980",
-          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
-        },
-        {
-          "id": "1136352266",
-          "name": "Musei Vaticani - Visite Guidate Singoli Giardini e Musei"
-        },
-        {
-          "id": "503257337",
-          "name": "Musei Vaticani - Visite Guidate Gruppi Giardini e Musei"
-        },
-        {
-          "id": "1384551126",
-          "name": "Musei Vaticani - Visite Guidate Singoli Cattura la Natura"
-        },
-        {
-          "id": "292225694",
-          "name": "Musei Vaticani - Visite Guidate Singoli Quaresima ai Musei Vaticani"
-        },
-        {
-          "id": "454118461",
-          "name": "Musei Vaticani - Vatican City Tours - Open Bus Giardini"
-        },
-        {
-          "id": "788623414",
-          "name": "Musei Vaticani - Reparti Chiusi - Bramante e Niccolina"
-        },
-        {
-          "id": "1210686700",
-          "name": "Musei Vaticani - Reparti Chiusi - Scala del Bramante"
-        }
-      ],
-      "jsessionid": "59FAE68A8E263FCBC02419017F5C2AFB",
-      "timestamp": "2026-03-04T17:25:23.028614"
+    "10/03/2026_2_0": {
+      "ids": [],
+      "jsessionid": "3725143114229B444D32FF6A52FD73A2",
+      "timestamp": "2026-03-16T09:00:31.428552"
     },
-    "23/03/2026_1_0": {
+    "11/05/2026_1_0": {
       "ids": [
         {
-          "id": "547227840",
+          "id": "956254114",
           "name": "Specola Vaticana - Visita Guidata Gruppi"
         },
         {
-          "id": "1026213998",
+          "id": "819672548",
           "name": "Palazzo Papale - Cupole Astronomiche"
         },
         {
-          "id": "1901703933",
+          "id": "58317477",
           "name": "Palazzo Papale - Biglietti d'ingresso"
         },
         {
-          "id": "712192602",
+          "id": "1932637992",
           "name": "Palazzo Papale - Visita Guidata Gruppi"
         },
         {
-          "id": "233206444",
+          "id": "2069219558",
           "name": "Palazzo Papale - Reparti Chiusi"
         },
         {
-          "id": "464745459",
-          "name": "Specola Vaticana - Pellegrinaggi - Visita Guidata Gruppi"
+          "id": "468062175",
+          "name": "Palazzo Papale - Reparti Chiusi"
         },
         {
-          "id": "629710221",
-          "name": "Palazzo Papale - Pellegrinaggi - Biglietti d'ingresso"
+          "id": "1444446053",
+          "name": "N. Partecipanti 11 - 25"
         },
         {
-          "id": "1587682537",
-          "name": "Palazzo Papale - Pellegrinaggi - Visita Guidata Gruppi"
+          "id": "1171282921",
+          "name": "N. Partecipanti 11 - 30"
         },
         {
-          "id": "975547873",
+          "id": "20496068",
           "name": "Borgo Laudato si' - Mezzo Ecologico"
         },
         {
-          "id": "1851037808",
+          "id": "1406624644",
           "name": "Borgo Laudato si' - Passeggiata"
         }
       ],
-      "jsessionid": "57412B9CE9ED3B6E12110BC8A59AF0BF",
-      "timestamp": "2026-03-04T17:26:17.501437"
+      "jsessionid": "335681D54DF715CF5789BC587C657D15",
+      "timestamp": "2026-03-16T09:08:46.984867"
     },
-    "26/05/2026_6_0": {
+    "10/03/2026_2_1": {
+      "ids": [],
+      "jsessionid": "B47899C6E9A179FF5A959FDAAA3B94F1",
+      "timestamp": "2026-03-16T09:01:37.892504"
+    },
+    "21/06/2026_4_0": {
       "ids": [
         {
-          "id": "289863926",
+          "id": "773933482",
           "name": "Musei Vaticani - Biglietti d'ingresso"
         },
         {
-          "id": "521504293",
+          "id": "648915389",
           "name": "Musei Vaticani - Visite Guidate Singoli Musei"
         },
         {
-          "id": "2118846135",
+          "id": "2044012633",
           "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
         },
         {
-          "id": "1769779456",
-          "name": "Musei Vaticani - Visite Guidate Singoli Giardini e Musei"
+          "id": "1829775686",
+          "name": "N. Partecipanti 1 - 20"
         },
         {
-          "id": "1314545631",
-          "name": "Musei Vaticani - Reparti Chiusi - Bramante e Niccolina"
+          "id": "1077389283",
+          "name": "N. Partecipanti 1 - 20"
         },
         {
-          "id": "965478952",
-          "name": "Musei Vaticani - Reparti Chiusi - Scala del Bramante"
+          "id": "1720100124",
+          "name": "N. Partecipanti 1 - 20"
         },
         {
-          "id": "66270468",
-          "name": "Musei Vaticani - Reparti Chiusi - Cappella Niccolina"
+          "id": "2038898456",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "172437614",
-          "name": "Musei Vaticani - Reparti Chiusi - Gabinetto delle Maschere"
+          "id": "1824661509",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "764403826",
-          "name": "Musei Vaticani - Didattiche - Biglietti d'ingresso"
+          "id": "858038159",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "1367629204",
-          "name": "Musei Vaticani - Didattiche - Visita Guidata Musei"
+          "id": "434678442",
+          "name": "N. Partecipanti 1 - 10"
         }
       ],
-      "jsessionid": "0E20801BE30ADF19669F4EF608AA4F03",
-      "timestamp": "2026-03-04T17:26:36.290310"
+      "jsessionid": "7DF922F2FC6248E23709D70924FB0C31",
+      "timestamp": "2026-03-16T09:00:59.563946"
     },
-    "2026-05-26_6_0": {
+    "16/06/2026_2_0": {
+      "ids": [],
+      "jsessionid": "8B8817889DFB49592926A27D9EA327C9",
+      "timestamp": "2026-03-15T11:03:32.821212"
+    },
+    "15/06/2026_2_1": {
       "ids": [
         {
-          "id": "767887512",
+          "id": "406351845",
+          "name": "Specola Vaticana - Visita Guidata Gruppi"
+        },
+        {
+          "id": "961217246",
+          "name": "Palazzo Papale - Cupole Astronomiche"
+        },
+        {
+          "id": "1862000262",
+          "name": "Palazzo Papale - Biglietti d'ingresso"
+        },
+        {
+          "id": "824247417",
+          "name": "Palazzo Papale - Visita Guidata Gruppi"
+        },
+        {
+          "id": "269382016",
+          "name": "Palazzo Papale - Reparti Chiusi"
+        },
+        {
+          "id": "197404059",
+          "name": "Palazzo Papale - Reparti Chiusi"
+        },
+        {
+          "id": "615299631",
+          "name": "N. Partecipanti 11 - 25"
+        },
+        {
+          "id": "1725030433",
+          "name": "N. Partecipanti 11 - 30"
+        },
+        {
+          "id": "2428443",
+          "name": "Borgo Laudato si' - Mezzo Ecologico"
+        },
+        {
+          "id": "903211459",
+          "name": "Borgo Laudato si' - Passeggiata"
+        }
+      ],
+      "jsessionid": "B065EE37163FEB2C0B385A82F3CEC9E7",
+      "timestamp": "2026-03-15T08:45:32.279010"
+    },
+    "2026-05-14_6_0": {
+      "ids": [
+        {
+          "id": "1280403935",
           "name": "Musei Vaticani - Biglietti d'ingresso"
         },
         {
-          "id": "1293069058",
+          "id": "1113354692",
           "name": "Musei Vaticani - Visite Guidate Singoli Musei"
         },
         {
-          "id": "2062853872",
+          "id": "919353973",
           "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
         },
         {
-          "id": "1549663996",
-          "name": "Musei Vaticani - Visite Guidate Singoli Giardini e Musei"
+          "id": "435242240",
+          "name": "N. Partecipanti 1 - 28"
         },
         {
-          "id": "752301691",
-          "name": "Musei Vaticani - Reparti Chiusi - Bramante e Niccolina"
+          "id": "1057671611",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "239111815",
-          "name": "Musei Vaticani - Reparti Chiusi - Scala del Bramante"
+          "id": "1902833306",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "495706753",
-          "name": "Musei Vaticani - Reparti Chiusi - Cappella Niccolina"
+          "id": "406510635",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "779879182",
-          "name": "Musei Vaticani - Reparti Chiusi - Gabinetto delle Maschere"
+          "id": "1958516387",
+          "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "1522086505",
-          "name": "Musei Vaticani - Didattiche - Biglietti d'ingresso"
+          "id": "863670892",
+          "name": "N. Partecipanti 11 - 30"
         },
         {
-          "id": "1968129729",
-          "name": "Musei Vaticani - Didattiche - Visita Guidata Musei"
+          "id": "1833674487",
+          "name": "N. Partecipanti 11 - 30"
         }
       ],
-      "jsessionid": "98B7ADA5C73071063725EF27AC894E8A",
-      "timestamp": "2026-03-04T17:27:35.184174"
+      "jsessionid": "37316E3B87354562881E97050A0DCCBA",
+      "timestamp": "2026-03-15T11:41:24.839705"
+    },
+    "20/06/2026_4_0": {
+      "ids": [],
+      "jsessionid": "332DC9A3E6CD8D33AA39E471299DCC42",
+      "timestamp": "2026-03-15T11:07:24.877747"
+    },
+    "22/06/2026_4_0": {
+      "ids": [],
+      "jsessionid": "E2AB5B5CB9B9540680748BA7D3B799DA",
+      "timestamp": "2026-03-15T11:09:49.549146"
+    },
+    "16/03/2026_1_0": {
+      "ids": [],
+      "jsessionid": "BF66EFD85FC374ACE6ABEAB43B3AC23E",
+      "timestamp": "2026-03-16T09:10:01.086025"
+    },
+    "15/06/2026_2_0": {
+      "ids": [],
+      "jsessionid": "8196A592F7A066B53F8811A5857FA04B",
+      "timestamp": "2026-03-15T19:40:21.824318"
     }
   },
-  "last_updated": "2026-03-04T17:27:35.184193"
+  "last_updated": "2026-03-16T09:10:01.086042"
 }
