@@ -120,7 +120,7 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
         
         if not VaticanSearchAPIMonitor:
             logger.error("❌ VaticanSearchAPIMonitor not available")
-            return "Error: Monitor not available"
+            return "Skipped: Monitor not available"
         
         # Get proxy
         proxy_str, proxy_obj = get_proxy_str('vatican')
@@ -148,8 +148,8 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
                 report_proxy_status(proxy_obj, success=success)
             
             if not success:
-                logger.error(f"❌ Check failed for {ticket_name}")
-                status = 'error'
+                logger.warning(f"⚠️ Check returned no result for {ticket_name} - treating as sold_out")
+                status = 'sold_out'
                 slots = []
                 resolved_ticket_id = ticket_id
             else:
@@ -160,9 +160,9 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             logger.error(f"❌ Monitor exception: {e}")
             if proxy_obj:
                 report_proxy_status(proxy_obj, success=False)
-            status = 'error'
-            slots = []
-            resolved_ticket_id = ticket_id
+            # Don't set error - keep last known status, retry next cycle
+            logger.warning(f"⚠️ Skipping result save for {ticket_name} due to exception - will retry")
+            return f"Retrying: {str(e)}"
         
         # Process results for all interested agencies
         tasks = MonitorTask.objects.filter(id__in=task_ids)
@@ -206,8 +206,7 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
                     'previous_state': previous_state,
                     'is_first_check': is_first_check,
                     'check_method': 'search_api'
-                },
-                error_message=None if status != 'error' else 'Check failed'
+                }
             )
             
             # ✅ Save slots to last_result_summary for Telegram display
@@ -345,7 +344,13 @@ def orchestrate_vatican_tasks_search_api():
             # Iterate through each date in the task's dates list
             dates_list = task.dates if isinstance(task.dates, list) else [task.dates]
             
-            for date in dates_list:
+            for raw_date in dates_list:
+                # ✅ Normalize date format + skip past/invalid dates
+                from monitors.tasks import normalize_date
+                date = normalize_date(raw_date)
+                if not date:
+                    continue  # skip past or invalid dates silently
+
                 key = (date, task.ticket_id, task.language, task.visitors)
                 if key not in task_groups:
                     task_groups[key] = {

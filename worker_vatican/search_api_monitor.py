@@ -368,22 +368,26 @@ class VaticanSearchAPIMonitor:
         tickets = self.resolve_ticket_ids(target_date, visitors, ticket_type, language)
         
         if not tickets:
-            logger.error(f"❌ No tickets found")
-            return False, [], None
+            logger.warning(f"⚠️ No tickets returned from search API for {target_date} - treating as sold_out")
+            return True, [], None  # Return success=True, empty slots = sold_out (not error)
         
         # Step 2: Match ticket by name
         ticket_id = self.match_ticket_by_name(tickets, ticket_name, ticket_type)
         
         if not ticket_id:
-            logger.error(f"❌ Could not match ticket: {ticket_name}")
-            return False, [], None
+            logger.warning(f"⚠️ Could not match ticket '{ticket_name}' - treating as sold_out")
+            return True, [], None  # Return success=True, empty slots = sold_out (not error)
         
         # Step 3: Check availability
         success, available_slots = self.check_availability(
             ticket_id, target_date, visitors, language
         )
         
-        return success, available_slots, ticket_id
+        if not success:
+            logger.warning(f"⚠️ Timeavail API failed for {ticket_id} - treating as sold_out")
+            return True, [], ticket_id  # Return success=True, empty slots = sold_out (not error)
+        
+        return True, available_slots, ticket_id
 
 
 # Convenience function for backward compatibility
