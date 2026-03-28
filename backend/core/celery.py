@@ -21,6 +21,12 @@ app.autodiscover_tasks(['monitors'], related_name='tasks_search_api')
 # Explicitly import main tasks module to ensure registration
 app.autodiscover_tasks(['monitors'], related_name='tasks')
 
+# Hold manager tasks
+app.autodiscover_tasks(['monitors'], related_name='tasks_hold')
+
+# Sweep tasks (mass hold)
+app.autodiscover_tasks(['monitors'], related_name='tasks_sweep')
+
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     print(f'Request: {self.request!r}')

@@ -192,6 +192,19 @@ CELERY_TASK_TIME_LIMIT = 30 * 60
 # Celery Beat settings
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
+CELERY_BEAT_SCHEDULE = {
+    'keepalive-held-slots': {
+        'task': 'keepalive_held_slots',
+        'schedule': 300,  # every 5 minutes
+        'options': {'queue': 'vatican'},
+    },
+    'sweep-monitor-dates': {
+        'task': 'sweep_monitor_dates',
+        'schedule': 30,  # every 30 seconds
+        'options': {'queue': 'vatican'},
+    },
+}
+
 # Cache Configuration (Redis)
 CACHES = {
     "default": {

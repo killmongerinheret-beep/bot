@@ -113,8 +113,9 @@ class MonitorTask(models.Model):
     ]
 
     TIER_CHOICES = [
-        ('monitor', 'Monitor (Notify Only)'),
-        ('sniper', 'Sniper (Auto-Book)'),
+        ('notify', 'Notify Only'),
+        ('hold', 'Notify + Hold'),
+        ('snipe', 'Notify + Hold + Auto-Pay'),
     ]
 
     agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name='tasks')
@@ -151,7 +152,7 @@ class MonitorTask(models.Model):
     
     check_interval = models.IntegerField(default=60, help_text="Interval in seconds")
     
-    tier = models.CharField(max_length=20, choices=TIER_CHOICES, default='monitor')
+    tier = models.CharField(max_length=20, choices=TIER_CHOICES, default='notify')
     match_strategy = models.CharField(max_length=20, choices=MATCH_STRATEGY_CHOICES, default='any')
     notification_mode = models.CharField(max_length=20, choices=NOTIFICATION_MODE_CHOICES, default='any_change')
     
@@ -176,6 +177,118 @@ class CheckResult(models.Model):
 
     def __str__(self):
         return f"Result for {self.task.id} at {self.check_time}"
+
+
+class BuyerProfile(models.Model):
+    """
+    Stores real person details for snipe mode auto-booking.
+    One profile per agency — used as representativeUser + participantUser.
+    """
+    agency = models.OneToOneField(Agency, on_delete=models.CASCADE, related_name='buyer_profile')
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    email = models.EmailField()
+    phone = models.CharField(max_length=30)
+    country = models.CharField(max_length=100, default='Italy')
+    city = models.CharField(max_length=100, default='Roma')
+    birth_date = models.DateField(null=True, blank=True, help_text='YYYY-MM-DD')
+    gender = models.CharField(max_length=1, default='M', choices=[('M','Male'),('F','Female')])
+    language = models.CharField(max_length=5, default='en')
+    # Card details for snipe auto-pay (stored encrypted in production)
+    card_number = models.CharField(max_length=20, blank=True, null=True)
+    card_expiry = models.CharField(max_length=7, blank=True, null=True, help_text='MM/YYYY')
+    card_cvv = models.CharField(max_length=4, blank=True, null=True)
+    card_holder = models.CharField(max_length=100, blank=True, null=True)
+    # Participant list (JSON array of {first_name, last_name}) — uploaded via /setparticipants
+    participants_json = models.TextField(blank=True, null=True, help_text='JSON list of participant names')
+
+    class Meta:
+        db_table = 'buyer_profiles'
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} ({self.agency.name})"
+
+    def to_representative_user(self):
+        from datetime import datetime
+        bd = None
+        if self.birth_date:
+            bd = datetime.combine(self.birth_date, datetime.min.time()).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        return {
+            'name': self.first_name,
+            'surname': self.last_name,
+            'gender': self.gender,
+            'country': self.country,
+            'city': self.city,
+            'birthDate': bd,
+            'email': self.email,
+            'confirmEmail': self.email,
+            'telephoneNumber': self.phone,
+            'language': self.language,
+        }
+
+    def to_participant_list(self, visitors, ticket_id=60, service_ids=None):
+        service_ids = service_ids or [58]
+        # Use uploaded participant names if available, otherwise repeat representative
+        import json
+        names = []
+        if self.participants_json:
+            try:
+                names = json.loads(self.participants_json)
+            except Exception:
+                names = []
+        # Pad/trim to match visitor count
+        while len(names) < visitors:
+            names.append({'first_name': self.first_name, 'last_name': self.last_name})
+        names = names[:visitors]
+        return [
+            {
+                'name': p['first_name'],
+                'surname': p['last_name'],
+                'id': ticket_id,
+                'ticketType': 'intero',
+                'services': service_ids,
+            }
+            for p in names
+        ]
+
+
+class HeldSlot(models.Model):
+    """Tracks Vatican slots held via /api/visit/recap with active session keepalive."""
+    STATUS_CHOICES = [
+        ('held', 'Held'),
+        ('paying', 'Paying'),
+        ('paid', 'Paid'),
+        ('released', 'Released'),
+        ('expired', 'Expired'),
+    ]
+
+    task = models.ForeignKey(MonitorTask, on_delete=models.CASCADE, related_name='held_slots')
+    date = models.CharField(max_length=20, help_text='DD/MM/YYYY')
+    slot_id = models.CharField(max_length=50, help_text='e.g. 2026*8776')
+    slot_time = models.CharField(max_length=10, help_text='e.g. 12:00')
+    ticket_id = models.CharField(max_length=50)
+    ticket_name = models.CharField(max_length=300)
+    visitors = models.PositiveIntegerField(default=2)
+    total_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    jsessionid = models.CharField(max_length=255)
+    ticketmv = models.CharField(max_length=50, blank=True, null=True)
+    recap_id = models.CharField(max_length=50, blank=True, null=True, help_text='e.g. 2026/8367/119 — needed for reservation')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='held')
+    hold_started_at = models.DateTimeField(default=timezone.now)
+    last_keepalive_at = models.DateTimeField(default=timezone.now)
+    released_at = models.DateTimeField(null=True, blank=True)
+    payment_url = models.TextField(null=True, blank=True)
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'held_slots'
+        ordering = ['-hold_started_at']
+
+    def __str__(self):
+        return f"Hold #{self.id} | {self.task.agency.name} | {self.date} {self.slot_time} | {self.status}"
+
+    def hold_duration_minutes(self):
+        return int((timezone.now() - self.hold_started_at).total_seconds() / 60)
 
 
 class TelegramGroup(models.Model):

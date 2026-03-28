@@ -3,9 +3,10 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AgencyViewSet, MonitorTaskViewSet, CheckResultViewSet,
     ProxyViewSet, SiteCredentialViewSet, AgencyLoginView, MyAgencyView,
-    get_vatican_tickets,  # ✅ Vatican tickets API
-    list_telegram_groups, approve_telegram_group, reject_telegram_group, suspend_telegram_group,  # ✅ Telegram group management
-    register_user, login_user, logout_user, verify_session  # ✅ Authentication
+    get_vatican_tickets,
+    list_telegram_groups, approve_telegram_group, reject_telegram_group, suspend_telegram_group,
+    register_user, login_user, logout_user, verify_session,
+    list_held_slots, release_held_slot, checkout_redirect,
 )
 from .admin_views import (
     AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet
@@ -42,5 +43,8 @@ urlpatterns = [
     path('telegram-groups/<int:group_id>/approve/', approve_telegram_group, name='approve-telegram-group'),
     path('telegram-groups/<int:group_id>/reject/', reject_telegram_group, name='reject-telegram-group'),
     path('telegram-groups/<int:group_id>/suspend/', suspend_telegram_group, name='suspend-telegram-group'),
+    path('holds/', list_held_slots, name='list-held-slots'),
+    path('holds/<int:hold_id>/release/', release_held_slot, name='release-held-slot'),
+    path('holds/<int:hold_id>/checkout/', checkout_redirect, name='checkout-redirect'),
     path('', include(router.urls)),
 ]

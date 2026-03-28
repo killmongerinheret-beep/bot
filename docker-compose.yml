@@ -34,7 +34,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - PYTHONPATH=/app/backend:/app
       - STATIC_ROOT=/app/backend/staticfiles
-      - ALLOWED_HOSTS=localhost,127.0.0.1,151.25.69.162,hydrasnipe.it,www.hydrasnipe.it
+      - ALLOWED_HOSTS=localhost,127.0.0.1,151.25.69.162,hydrabot.it,www.hydrabot.it,api.hydrabot.it,hyperkinetic-unsplendorously-jessi.ngrok-free.dev
     depends_on:
       - db
       - redis
@@ -52,6 +52,7 @@ services:
       - PYTHONPATH=/app/backend:/app
       - OXYLABS_USERNAME=${OXYLABS_USERNAME}
       - OXYLABS_PASSWORD=${OXYLABS_PASSWORD}
+      - TWOCAPTCHA_API_KEY=${TWOCAPTCHA_API_KEY}
       - VATICAN_CONCURRENCY=${VATICAN_CONCURRENCY:-4}
       - VATICAN_RPS=${VATICAN_RPS:-5}
       - VATICAN_VISITORS=${VATICAN_VISITORS:-2}
@@ -84,6 +85,7 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/ticketbot
       - CELERY_BROKER_URL=redis://redis:6379/0
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ADMIN_TELEGRAM_IDS=${ADMIN_TELEGRAM_IDS}
       - PYTHONPATH=/app/backend:/app
       - DJANGO_SETTINGS_MODULE=core.settings
     depends_on:
@@ -130,7 +132,16 @@ services:
     image: cloudflare/cloudflared:latest
     restart: always
     network_mode: host
-    command: tunnel --url http://localhost:8000
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: always
+    command: http backend:8000 --authtoken ${NGROK_AUTHTOKEN} --url=${NGROK_DOMAIN}
+    ports:
+      - "4040:4040"
+    depends_on:
+      - backend
 
   harvester:
     build: ./harvester

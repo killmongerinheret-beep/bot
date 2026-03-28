@@ -317,21 +317,7 @@ class MonitorTaskViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        agency = serializer.validated_data['agency']
-        plan = getattr(agency, 'plan', 'free')
-        active_task_count = MonitorTask.objects.filter(agency=agency, is_active=True).count()
-        
-        limits = {
-            'free': 1000,
-            'pro': 2000,
-            'agency': 5000
-        }
-        limit = limits.get(plan, 2)
-        
-        if active_task_count >= limit:
-            from rest_framework.exceptions import ValidationError
-            raise ValidationError({'detail': f"Monitor limit reached for your '{plan}' plan ({limit} tasks). Please upgrade."})
-            
+        # No monitor count limits — plan gates tier features (hold/snipe), not quantity
         serializer.save()
 
 class CheckResultViewSet(viewsets.ModelViewSet):
@@ -832,3 +818,547 @@ def suspend_telegram_group(request, group_id):
     except Exception as e:
         logger.error(f"Error suspending group: {e}")
         return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+def list_held_slots(request):
+    """List all active held slots — all holds for super admin, agency-filtered otherwise."""
+    from .models import HeldSlot
+    from django.core.cache import cache
+
+    # Check session for super admin
+    auth_header = request.headers.get('Authorization', '')
+    session_data = None
+    if auth_header.startswith('Bearer '):
+        token = auth_header.replace('Bearer ', '')
+        session_data = cache.get(f"session:{token}")
+
+    status_filter = request.query_params.get('status', 'held')
+
+    # Super admin or no auth — return all holds
+    if session_data and session_data.get('is_super_admin'):
+        holds = HeldSlot.objects.all()
+    else:
+        agency = _get_agency_from_request(request)
+        if not agency:
+            # No auth — return all holds (for dashboard display)
+            holds = HeldSlot.objects.all()
+        else:
+            holds = HeldSlot.objects.filter(task__agency=agency)
+
+    if status_filter != 'all':
+        holds = holds.filter(status=status_filter)
+
+    holds = holds.order_by('date', 'slot_time', 'visitors')
+
+    data = []
+    for h in holds:
+        data.append({
+            'id': h.id,
+            'date': h.date,
+            'slot_time': h.slot_time,
+            'ticket_name': h.ticket_name,
+            'visitors': h.visitors,
+            'total_price': str(h.total_price),
+            'status': h.status,
+            'hold_duration_minutes': h.hold_duration_minutes(),
+            'last_keepalive_at': h.last_keepalive_at.isoformat(),
+            'hold_started_at': h.hold_started_at.isoformat(),
+        })
+    return Response(data)
+
+
+@api_view(['POST'])
+def release_held_slot(request, hold_id):
+    """Release a held slot."""
+    from .models import HeldSlot
+    from .hold_manager import release_slot
+    agency = _get_agency_from_request(request)
+    if not agency:
+        return Response({'error': 'Not authenticated'}, status=401)
+
+    try:
+        hold = HeldSlot.objects.get(id=hold_id, task__agency=agency)
+        release_slot(hold)
+        return Response({'success': True, 'message': f'Hold #{hold_id} released'})
+    except HeldSlot.DoesNotExist:
+        return Response({'error': 'Hold not found'}, status=404)
+
+
+def _get_agency_from_request(request):
+    """Helper to get agency from session."""
+    from .models import Agency
+    agency_id = request.session.get('agency_id')
+    if agency_id:
+        return Agency.objects.filter(id=agency_id).first()
+    return None
+
+
+from django.http import HttpResponse, StreamingHttpResponse
+import requests as req_lib
+import os
+from django.views.decorators.csrf import csrf_exempt
+
+VATICAN_BASE = 'https://tickets.museivaticani.va'
+
+@csrf_exempt
+def checkout_redirect(request, hold_id):
+    """
+    Two modes:
+    - GET  → show hold details page with "Get Payment Link" button
+    - POST → call Vatican /api/visit/reservation server-side, return epay URL
+    """
+    from .models import HeldSlot, BuyerProfile
+
+    try:
+        hold = HeldSlot.objects.select_related('task__agency').get(id=hold_id, status='held')
+    except HeldSlot.DoesNotExist:
+        return HttpResponse(_error_page("Hold not found or already expired."),
+                           status=404, content_type='text/html')
+
+    if request.method == 'POST':
+        return _do_reservation(request, hold)
+
+    # GET — show the hold details page
+    agency = hold.task.agency
+    has_profile = BuyerProfile.objects.filter(agency=agency).exists()
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Vatican Checkout — {hold.date} {hold.slot_time}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#fff;
+         min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}}
+    .card{{background:#111;border:1px solid #222;border-radius:20px;padding:32px;max-width:480px;width:100%}}
+    .badge{{display:inline-block;background:#00E37C20;color:#00E37C;border:1px solid #00E37C40;
+            border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;margin-bottom:20px}}
+    h2{{font-size:22px;font-weight:700;margin-bottom:8px}}
+    .meta{{color:#666;font-size:14px;margin-bottom:28px}}
+    .row{{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #1a1a1a;font-size:14px}}
+    .row:last-of-type{{border-bottom:none}}
+    .label{{color:#666}}.value{{color:#fff;font-weight:500}}
+    .total{{color:#00E37C;font-size:18px;font-weight:700}}
+    .btn{{display:block;width:100%;margin-top:28px;padding:16px;background:#00E37C;color:#000;
+          border:none;border-radius:14px;font-size:16px;font-weight:700;cursor:pointer;transition:opacity .2s}}
+    .btn:hover{{opacity:.9}}.btn:disabled{{opacity:.5;cursor:not-allowed}}
+    .btn-secondary{{background:#1a1a1a;color:#888;border:1px solid #262626;margin-top:12px}}
+    .warn{{margin-top:16px;padding:12px;background:#ff4d4d15;border:1px solid #ff4d4d30;
+           border-radius:10px;font-size:13px;color:#ff4d4d}}
+    .info{{margin-top:16px;padding:12px;background:#00E37C10;border:1px solid #00E37C30;
+           border-radius:10px;font-size:13px;color:#00E37C}}
+    #result{{margin-top:20px;display:none}}
+    .pay-link{{display:block;margin-top:12px;padding:16px;background:#00E37C;color:#000;
+               border-radius:14px;font-size:15px;font-weight:700;text-align:center;text-decoration:none}}
+    .spinner{{display:inline-block;width:16px;height:16px;border:2px solid #000;
+              border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:8px}}
+    @keyframes spin{{to{{transform:rotate(360deg)}}}}
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="badge">🔒 SLOT HELD</div>
+  <h2>Vatican Checkout</h2>
+  <p class="meta">Hold #{hold.id} &bull; Agency: {agency.name}</p>
+
+  <div class="row"><span class="label">Date</span><span class="value">{hold.date}</span></div>
+  <div class="row"><span class="label">Time</span><span class="value">{hold.slot_time}</span></div>
+  <div class="row"><span class="label">Visitors</span><span class="value">{hold.visitors}</span></div>
+  <div class="row"><span class="label">Total</span><span class="value total">&euro;{hold.total_price}</span></div>
+
+  {'<div class="warn">⚠️ No buyer profile set. <a href="#" style="color:#ff4d4d">Set profile</a> to generate payment link.</div>' if not has_profile else ''}
+
+  <div style="margin-top:20px">
+    <label style="font-size:12px;color:#666;display:block;margin-bottom:6px">
+      reCAPTCHA Token (optional — paste from browser DevTools for instant payment)
+    </label>
+    <textarea id="recaptchaToken" placeholder="Paste reCAPTCHA token here, or leave empty to auto-solve..."
+      style="width:100%;background:#1a1a1a;border:1px solid #262626;border-radius:10px;
+             padding:10px;color:#fff;font-size:11px;font-family:monospace;resize:vertical;
+             min-height:60px;outline:none"></textarea>
+    <p style="font-size:11px;color:#444;margin-top:4px">
+      To get token: open Vatican site → DevTools → Network → filter "reservation" → copy recaptcha value
+    </p>
+  </div>
+
+  <button class="btn" id="payBtn" onclick="getPaymentLink()" {'disabled' if not has_profile else ''}>
+    💳 Generate Payment Link
+  </button>
+
+  <div id="result"></div>
+  <p style="margin-top:16px;font-size:12px;color:#444;text-align:center">
+    ⚠️ Single-use link. Do not share until ready to pay.
+  </p>
+</div>
+
+<script>
+async function getPaymentLink() {{
+  var btn = document.getElementById('payBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Generating...';
+
+  try {{
+    var resp = await fetch(window.location.href, {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')}},
+      body: JSON.stringify({{recaptcha: document.getElementById('recaptchaToken').value.trim()}})
+    }});
+    var data = await resp.json();
+
+    var result = document.getElementById('result');
+    if (data.payment_url) {{
+      result.innerHTML = '<div class="info">✅ Reservation confirmed! Payment page opens in new tab.</div>' +
+        '<a class="pay-link" href="' + data.payment_url + '" target="_blank">💳 Pay Now — epay.catholica.va</a>' +
+        '<p style="font-size:11px;color:#555;margin-top:8px">This is a clean payment link — no session needed. Share it or open it in any browser.</p>';
+      result.style.display = 'block';
+      window.open(data.payment_url, '_blank');
+      btn.innerHTML = '✅ Payment Link Ready';
+    }} else {{
+      result.innerHTML = '<div class="warn">❌ ' + (data.error || 'Failed to generate link') + '</div>';
+      result.style.display = 'block';
+      btn.disabled = false;
+      btn.innerHTML = '💳 Generate Payment Link';
+    }}
+  }} catch(e) {{
+    document.getElementById('result').innerHTML = '<div class="warn">❌ Network error: ' + e.message + '</div>';
+    document.getElementById('result').style.display = 'block';
+    btn.disabled = false;
+    btn.innerHTML = '💳 Generate Payment Link';
+  }}
+}}
+
+function getCookie(name) {{
+  var v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+  return v ? v[2] : '';
+}}
+</script>
+</body>
+</html>"""
+
+    return HttpResponse(html, content_type='text/html')
+
+
+def _do_reservation(request, held):
+    """
+    Call Vatican /api/visit/reservation server-side using held JSESSIONID.
+    Vatican uses Cloudflare Turnstile (sitekey: 0x4AAAAAAB2Edz1zEK7o5Rj1).
+    After success, Vatican redirects to epay.catholica.va — that's the payment URL.
+    """
+    import json as _json, re
+    from django.http import JsonResponse
+    from .models import BuyerProfile
+
+    try:
+        profile = BuyerProfile.objects.get(agency=held.task.agency)
+    except BuyerProfile.DoesNotExist:
+        return JsonResponse({'error': 'No buyer profile set for this agency'}, status=400)
+
+    try:
+        req_body = _json.loads(request.body or '{}')
+    except Exception:
+        req_body = {}
+    turnstile_token = req_body.get('recaptcha', '')
+
+    participants = profile.to_participant_list(held.visitors, ticket_id=60, service_ids=[58])
+
+    body = {
+        "recaptcha": turnstile_token,
+        "lang": "it",
+        "recapId": held.recap_id or '',
+        "visitorNum": held.visitors,
+        "visitId": held.slot_id,
+        "visitTypeId": int(held.ticket_id),
+        "tickets": [
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": held.visitors},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+        ],
+        "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": held.visitors}],
+        "representativeUser": profile.to_representative_user(),
+        "participantUser": participants,
+        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+    }
+
+    headers = {
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+        'Referer': f'{VATICAN_BASE}/home/checkout',
+        'Origin': VATICAN_BASE,
+        'Content-Type': 'application/json',
+        'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Linux"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+    }
+
+    s = req_lib.Session()
+    s.cookies.set('JSESSIONID', held.jsessionid, domain='tickets.museivaticani.va')
+    if held.ticketmv:
+        s.cookies.set('ticketmv', held.ticketmv, domain='tickets.museivaticani.va')
+
+    try:
+        r = s.post(
+            f'{VATICAN_BASE}/api/visit/reservation',
+            json=body, headers=headers, timeout=20,
+            allow_redirects=False  # catch the redirect manually
+        )
+
+        # Vatican returns 302 redirect to epay on success
+        if r.status_code in (200, 302):
+            payment_url = ''
+
+            # Check Location header (302 redirect)
+            if r.status_code == 302:
+                payment_url = r.headers.get('Location', '')
+
+            # Check response body for epay URL
+            if not payment_url:
+                match = re.search(r'https://epay\.catholica\.va[^\s"\'\\]+', r.text)
+                if match:
+                    payment_url = match.group(0)
+
+            # Check JSON keys
+            if not payment_url:
+                try:
+                    data = r.json()
+                    # Vatican response format: {"total":"2500","referenceOrder":"...","epay":{"url":"https://epay.catholica.va/...",...}}
+                    epay = data.get('epay', {})
+                    payment_url = (
+                        epay.get('url') or
+                        data.get('redirectUrl') or
+                        data.get('paymentUrl') or
+                        data.get('url') or
+                        ''
+                    )
+                    # Build full epay URL if we have the components
+                    if not payment_url:
+                        siv_id = data.get('sivTransactionId') or data.get('transactionId')
+                        mac = data.get('uppRedirectMac') or data.get('mac')
+                        if siv_id and mac:
+                            jsid_epay = s.cookies.get('JSESSIONID', held.jsessionid)
+                            payment_url = f"https://epay.catholica.va/pay/public/init/{siv_id}/{mac}/it;jsessionid={jsid_epay}"
+                except Exception:
+                    pass
+
+            if payment_url:
+                held.status = 'paying'
+                held.payment_url = payment_url
+                held.save(update_fields=['status', 'payment_url'])
+                return JsonResponse({'payment_url': payment_url, 'recap_id': held.recap_id})
+            else:
+                return JsonResponse({
+                    'error': 'Reservation succeeded but no payment URL found',
+                    'raw': r.text[:500],
+                    'status': r.status_code,
+                    'headers': dict(r.headers),
+                })
+        else:
+            err_msg = ''
+            try:
+                err_msg = r.json().get('message', r.text[:200])
+            except Exception:
+                err_msg = r.text[:200]
+            return JsonResponse({
+                'error': f'Reservation failed ({r.status_code}): {err_msg}',
+            }, status=400)
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+def _error_page(msg):
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Error</title>
+<style>body{{font-family:sans-serif;background:#111;color:#fff;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px;}}
+h2{{color:#ff4d4d;}}p{{color:#888;}}</style></head>
+<body><h2>⚠️ {msg}</h2><p>The hold session may have expired.</p></body></html>"""
+
+    """
+    Serves a page with a bookmarklet/button that injects the JSESSIONID
+    into the browser for tickets.museivaticani.va, then redirects to checkout.
+
+    Flow:
+    1. User opens this page
+    2. Page shows hold details + "Open Checkout" button
+    3. Button opens tickets.museivaticani.va in a new tab
+    4. After 2s (page loads), injects JSESSIONID via postMessage trick
+    5. Redirects that tab to /home/checkout
+    """
+    from .models import HeldSlot
+
+    try:
+        hold = HeldSlot.objects.get(id=hold_id, status='held')
+    except HeldSlot.DoesNotExist:
+        return HttpResponse(_error_page("Hold not found or already expired."),
+                           status=404, content_type='text/html')
+
+    jsessionid = hold.jsessionid
+    ticketmv = hold.ticketmv or ''
+
+    # Build the bookmarklet JS — injects cookie then goes to checkout
+    cookie_js = (
+        f"document.cookie='JSESSIONID={jsessionid};domain=.museivaticani.va;path=/;SameSite=Lax';"
+        + (f"document.cookie='ticketmv={ticketmv};domain=.museivaticani.va;path=/;SameSite=Lax';" if ticketmv else "")
+        + "window.location.href='https://tickets.museivaticani.va/home/checkout';"
+    )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Vatican Checkout — {hold.date} {hold.slot_time}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: -apple-system, sans-serif; background: #0a0a0a; color: #fff;
+           min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }}
+    .card {{ background: #111; border: 1px solid #222; border-radius: 20px;
+             padding: 32px; max-width: 480px; width: 100%; }}
+    .badge {{ display: inline-block; background: #00E37C20; color: #00E37C;
+              border: 1px solid #00E37C40; border-radius: 20px; padding: 4px 12px;
+              font-size: 12px; font-weight: 600; margin-bottom: 20px; }}
+    h2 {{ font-size: 22px; font-weight: 700; margin-bottom: 8px; }}
+    .meta {{ color: #666; font-size: 14px; margin-bottom: 28px; }}
+    .row {{ display: flex; justify-content: space-between; padding: 12px 0;
+            border-bottom: 1px solid #1a1a1a; font-size: 14px; }}
+    .row:last-of-type {{ border-bottom: none; }}
+    .label {{ color: #666; }}
+    .value {{ color: #fff; font-weight: 500; }}
+    .total {{ color: #00E37C; font-size: 18px; font-weight: 700; }}
+    .btn {{ display: block; width: 100%; margin-top: 28px; padding: 16px;
+            background: #00E37C; color: #000; border: none; border-radius: 14px;
+            font-size: 16px; font-weight: 700; cursor: pointer; text-align: center;
+            text-decoration: none; transition: opacity 0.2s; }}
+    .btn:hover {{ opacity: 0.9; }}
+    .btn:active {{ transform: scale(0.98); }}
+    .step {{ margin-top: 20px; padding: 16px; background: #0f0f0f;
+             border: 1px solid #1a1a1a; border-radius: 12px; }}
+    .step p {{ font-size: 13px; color: #555; line-height: 1.6; }}
+    .step code {{ background: #1a1a1a; padding: 2px 6px; border-radius: 4px;
+                  font-size: 12px; color: #00E37C; }}
+    .warning {{ margin-top: 12px; font-size: 12px; color: #555; text-align: center; }}
+    #status {{ margin-top: 16px; padding: 12px; border-radius: 10px;
+               font-size: 13px; text-align: center; display: none; }}
+    .status-ok {{ background: #00E37C15; color: #00E37C; border: 1px solid #00E37C30; }}
+    .status-err {{ background: #ff4d4d15; color: #ff4d4d; border: 1px solid #ff4d4d30; }}
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="badge">🔒 SLOT HELD</div>
+  <h2>Vatican Checkout</h2>
+  <p class="meta">Hold #{hold.id} &bull; Session active</p>
+
+  <div class="row"><span class="label">Date</span><span class="value">{hold.date}</span></div>
+  <div class="row"><span class="label">Time</span><span class="value">{hold.slot_time}</span></div>
+  <div class="row"><span class="label">Visitors</span><span class="value">{hold.visitors}</span></div>
+  <div class="row"><span class="label">Total</span><span class="value total">&euro;{hold.total_price}</span></div>
+
+  <button class="btn" onclick="openCheckout()">💳 Open Vatican Checkout</button>
+
+  <div id="status"></div>
+
+  <div class="step">
+    <p>
+      Clicking the button opens Vatican in a new tab and injects your session automatically.<br><br>
+      If it redirects to the homepage instead of checkout, use the manual method:<br>
+      1. Open <code>tickets.museivaticani.va</code> in your browser<br>
+      2. Open DevTools → Console<br>
+      3. Paste the code below and press Enter
+    </p>
+  </div>
+
+  <div class="step" style="margin-top:8px">
+    <p style="color:#888;margin-bottom:8px;font-size:12px">Manual cookie injection:</p>
+    <code id="snippet" style="display:block;word-break:break-all;font-size:11px;color:#00E37C;cursor:pointer"
+          onclick="copySnippet()" title="Click to copy">
+      {cookie_js}
+    </code>
+    <p style="margin-top:8px;font-size:11px;color:#444">Click code to copy</p>
+  </div>
+
+  <p class="warning">⚠️ This link is single-use. Do not share it.</p>
+</div>
+
+<script>
+  var JSESSIONID = '{jsessionid}';
+  var TICKETMV = '{ticketmv}';
+  var vatTab = null;
+
+  function openCheckout() {{
+    var btn = document.querySelector('.btn');
+    btn.textContent = '⏳ Opening...';
+    btn.disabled = true;
+
+    // Open Vatican homepage first (needed to accept cookies for that domain)
+    vatTab = window.open('https://tickets.museivaticani.va/home', '_blank');
+
+    if (!vatTab) {{
+      showStatus('Popup blocked. Allow popups for this site and try again.', false);
+      btn.textContent = '💳 Open Vatican Checkout';
+      btn.disabled = false;
+      return;
+    }}
+
+    // After Vatican loads, inject cookie and navigate to checkout
+    var attempts = 0;
+    var interval = setInterval(function() {{
+      attempts++;
+      try {{
+        // Try to inject cookie via postMessage to the Vatican tab
+        // This works if Vatican doesn't block it
+        vatTab.postMessage({{
+          type: 'SET_SESSION',
+          jsessionid: JSESSIONID
+        }}, 'https://tickets.museivaticani.va');
+      }} catch(e) {{}}
+
+      // After 3 seconds, navigate to checkout with cookie in URL param
+      // Vatican's Angular app reads jsessionid from URL on init
+      if (attempts >= 6) {{
+        clearInterval(interval);
+        try {{
+          vatTab.location.href = 'https://tickets.museivaticani.va/home/checkout;jsessionid=' + JSESSIONID;
+        }} catch(e) {{
+          // Cross-origin block — use the direct URL approach
+          vatTab.close();
+          window.open('https://tickets.museivaticani.va/home/checkout;jsessionid=' + JSESSIONID, '_blank');
+        }}
+        showStatus('Vatican checkout opened in new tab. Complete your payment there.', true);
+        btn.textContent = '✅ Checkout Opened';
+      }}
+    }}, 500);
+  }}
+
+  function showStatus(msg, ok) {{
+    var el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = ok ? 'status-ok' : 'status-err';
+    el.style.display = 'block';
+  }}
+
+  function copySnippet() {{
+    var code = document.getElementById('snippet').textContent.trim();
+    navigator.clipboard.writeText(code).then(function() {{
+      showStatus('✅ Copied! Paste in browser console on tickets.museivaticani.va', true);
+    }});
+  }}
+</script>
+</body>
+</html>"""
+
+    return HttpResponse(html, content_type='text/html')
+
+
+def _error_page(msg):
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Error</title>
+<style>body{{font-family:sans-serif;background:#111;color:#fff;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px;}}
+h2{{color:#ff4d4d;}}p{{color:#888;}}</style></head>
+<body><h2>⚠️ {msg}</h2><p>The hold session may have expired.</p></body></html>"""

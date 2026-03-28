@@ -172,7 +172,8 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             task.last_status = status
             
             # ✅ STATE CHANGE DETECTION using Redis
-            state_key = f"ticket_state:{task.id}:{ticket_id}:{date}"
+            # Key uses task.id + date only (stable - ticket_id can be None or change)
+            state_key = f"ticket_state:{task.id}:{date}"
             previous_state = cache.get(state_key)
             
             # Handle Redis Bytes vs String mismatch
@@ -230,8 +231,8 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             # ✅ SMART NOTIFICATION: Only alert on state CHANGE (closed → open)
             should_alert = status_changed_to_open and not is_first_check
             
-            # 🛡️ SPAM GUARD: Cooldown key
-            alert_cooldown_key = f"alert_cooldown:{task.id}:{ticket_id}:{date}"
+            # 🛡️ SPAM GUARD: Cooldown key (stable - no ticket_id)
+            alert_cooldown_key = f"alert_cooldown:{task.id}:{date}"
             if should_alert and cache.get(alert_cooldown_key):
                 logger.info(f"⏳ SUPPRESSED ALERT: Cooldown active for {ticket_name}")
                 should_alert = False
@@ -250,6 +251,27 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             else:
                 logger.info(f"ℹ️ {ticket_name} still AVAILABLE - no alert needed")
             
+            # ✅ AUTO-HOLD: Grab the slot immediately when it opens
+            if should_alert and slots:
+                try:
+                    from .tasks_hold import auto_hold_slot
+                    first_slot = slots[0] if isinstance(slots[0], dict) else {'time': slots[0], 'id': None}
+                    slot_time = first_slot.get('time', slots[0]) if isinstance(first_slot, dict) else slots[0]
+                    slot_id = first_slot.get('id') if isinstance(first_slot, dict) else None
+                    if slot_id:
+                        auto_hold_slot.delay(
+                            task_id=task.id,
+                            date=date,
+                            slot_id=slot_id,
+                            slot_time=slot_time,
+                            ticket_id=str(resolved_ticket_id or ticket_id or ''),
+                            ticket_name=ticket_name,
+                            visitors=task.visitors,
+                        )
+                        logger.info(f"🎯 Auto-hold triggered for {date} {slot_time} (task #{task.id})")
+                except Exception as e:
+                    logger.error(f"❌ Auto-hold trigger failed: {e}")
+
             # Send Telegram notification only if should_alert passed all checks
             if should_alert and task.notification_mode != 'silent':
                 try:
