@@ -885,6 +885,349 @@ def release_held_slot(request, hold_id):
         return Response({'error': 'Hold not found'}, status=404)
 
 
+@api_view(['POST'])
+def inject_dynamic_details(request, task_id):
+    """
+    Inject dynamic participant/card details for immediate hold/snipe.
+    
+    Payload:
+    {
+      "participants": [
+        {"first_name": "John", "last_name": "Doe"},
+        {"first_name": "Jane", "last_name": "Smith"}
+      ],
+      "card": {
+        "number": "4111111111111111",
+        "expiry": "12/2026",
+        "cvv": "123",
+        "holder": "John Doe"
+      },
+      "action": "epay"  // or "snipe"
+    }
+    """
+    from .models import MonitorTask, DynamicInjectionConfig, BuyerProfile
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    agency = _get_agency_from_request(request)
+    if not agency:
+        return Response({'error': 'Not authenticated'}, status=401)
+    
+    try:
+        task = MonitorTask.objects.get(id=task_id, agency=agency)
+        profile = BuyerProfile.objects.get(agency=agency)
+        
+        # Parse injection data
+        participants = request.data.get('participants', [])
+        card_details = request.data.get('card', {})
+        action = request.data.get('action', 'epay')
+        
+        # Validate action
+        if action not in ['epay', 'snipe']:
+            return Response({'error': 'Action must be "epay" or "snipe"'}, status=400)
+        
+        # Validate participants
+        if not participants:
+            return Response({'error': 'At least one participant required'}, status=400)
+        
+        # Create injection configuration (valid for 30 minutes)
+        config = DynamicInjectionConfig.objects.create(
+            task=task,
+            buyer_profile=profile,
+            participant_overrides=participants,
+            card_overrides=card_details,
+            action=action,
+            expires_at=timezone.now() + timedelta(minutes=30)
+        )
+        
+        return Response({
+            'status': 'injection_ready',
+            'config_id': config.id,
+            'action': config.action,
+            'expires_at': config.expires_at.isoformat(),
+            'message': f'Dynamic injection configured. Will be used for next available slot.'
+        })
+        
+    except MonitorTask.DoesNotExist:
+        return Response({'error': 'Task not found'}, status=404)
+    except BuyerProfile.DoesNotExist:
+        return Response({'error': 'Buyer profile not configured for this agency'}, status=400)
+
+
+@api_view(['POST'])
+def generate_realtime_epay(request):
+    """
+    Generate real-time epay link using random profiles and participant info.
+    Checks slot availability first, then creates epay link with randomized details.
+    
+    Payload:
+    {
+      "date": "2026-06-15",
+      "time": "10:00", 
+      "visitors": 2,
+      "agency_id": 1  // optional - uses random if not provided
+    }
+    """
+    from .models import Agency, BuyerProfile
+    from .hold_manager_enhanced import hold_with_dynamic_injection_error_free
+    from .tasks_search_api import search_slots
+    from django.utils import timezone
+    import random
+    import json
+    
+    try:
+        # Parse request data
+        date = request.data.get('date')
+        time_slot = request.data.get('time')
+        visitors = request.data.get('visitors', 2)
+        agency_id = request.data.get('agency_id')
+        
+        if not date or not time_slot:
+            return Response({'error': 'Date and time are required'}, status=400)
+        
+        # Get or create random agency profile
+        if agency_id:
+            agency = Agency.objects.get(id=agency_id)
+        else:
+            # Use first agency or create a temporary one
+            agency = Agency.objects.first()
+            if not agency:
+                agency = Agency.objects.create(
+                    name=f"TempAgency-{random.randint(1000, 9999)}",
+                    slug=f"temp-agency-{random.randint(1000, 9999)}"
+                )
+        
+        # Generate random representative profile
+        full_name = _generate_random_name()
+        first_name, last_name = full_name.split(' ', 1)
+        
+        # Create or get buyer profile with enhanced random data
+        profile, created = BuyerProfile.objects.get_or_create(
+            agency=agency,
+            defaults={
+                'first_name': first_name,
+                'last_name': last_name,
+                'email': _generate_random_email(first_name, last_name),
+                'phone': _generate_random_phone(),
+                'country': 'Italy',
+                'city': _generate_random_city(),
+                'gender': random.choice(['M', 'F']),
+                'language': 'it',
+                'birth_date': timezone.now().date() - timezone.timedelta(days=random.randint(7300, 14600))  # 20-40 years old
+            }
+        )
+        
+        # Generate random participants with realistic data
+        random_participants = []
+        for i in range(visitors):
+            participant_name = _generate_random_name()
+            p_first_name, p_last_name = participant_name.split(' ', 1)
+            random_participants.append({
+                'first_name': p_first_name,
+                'last_name': p_last_name,
+                'email': _generate_random_email(p_first_name, p_last_name),
+                'phone': _generate_random_phone()
+            })
+        
+        # Create temporary monitor task for this request
+        from .models import MonitorTask
+        temp_task = MonitorTask.objects.create(
+            agency=agency,
+            site='vatican',
+            area_name='Musei Vaticani',
+            dates=json.dumps([date]),
+            preferred_times=json.dumps([time_slot]),
+            visitors=visitors,
+            ticket_type=0,
+            ticket_label='Biglietto Intero',
+            check_interval=60,
+            tier='notify',
+            match_strategy='any',
+            notification_mode='any_change',
+            is_active=True
+        )
+        
+        # Search for available slots
+        available_slots = search_slots(temp_task)
+        
+        # Find the specific slot requested
+        target_slot = None
+        for slot in available_slots:
+            if (slot.get('date') == date and 
+                slot.get('time') == time_slot and 
+                slot.get('availability') != 'SOLD_OUT'):
+                target_slot = slot
+                break
+        
+        if not target_slot:
+            temp_task.delete()
+            return Response({
+                'status': 'no_slots',
+                'message': f'No available slots found for {date} {time_slot}'
+            }, status=404)
+        
+        # Create injection config
+        from .models import DynamicInjectionConfig
+        injection_config = DynamicInjectionConfig.objects.create(
+            task=temp_task,
+            buyer_profile=profile,
+            participant_overrides=random_participants,
+            card_overrides={},  # Empty for epay URL generation
+            action='epay',
+            expires_at=timezone.now() + timezone.timedelta(minutes=30)
+        )
+        
+        # Hold slot with dynamic injection using error-free handler
+        held_slot = hold_with_dynamic_injection_error_free(temp_task, target_slot, injection_config)
+        
+        if not held_slot:
+            temp_task.delete()
+            return Response({
+                'status': 'hold_failed',
+                'message': 'Failed to hold the slot'
+            }, status=500)
+        
+        # Return the epay URL
+        return Response({
+            'status': 'success',
+            'epay_url': held_slot.payment_url,
+            'hold_id': held_slot.id,
+            'slot_date': date,
+            'slot_time': time_slot,
+            'visitors': visitors,
+            'participants': random_participants,
+            'expires_at': injection_config.expires_at.isoformat(),
+            'message': 'Epay link generated successfully with random profiles'
+        })
+        
+    except Exception as e:
+        return Response({
+            'status': 'error',
+            'message': f'Failed to generate epay link: {str(e)}'
+        }, status=500)
+
+
+@api_view(['GET'])
+def generate_test_profiles(request):
+    """
+    Generate random test profiles for bot testing
+    Query params: count=5, visitors=2
+    Returns JSON data only - doesn't save to database
+    """
+    count = int(request.GET.get('count', 5))
+    visitors = int(request.GET.get('visitors', 2))
+    
+    if count > 50:
+        return Response({'error': 'Maximum 50 profiles per request'}, status=400)
+    
+    test_profiles = []
+    for i in range(count):
+        test_profiles.append(generate_test_profile(visitors))
+    
+    return Response({
+        'status': 'success',
+        'count': count,
+        'visitors_per_profile': visitors,
+        'profiles': test_profiles,
+        'message': f'Generated {count} test profiles with {visitors} visitors each'
+    })
+
+
+def _generate_random_name():
+    """Generate a random Italian-sounding name"""
+    first_names_male = ['Marco', 'Alessandro', 'Luca', 'Matteo', 'Andrea', 'Giovanni', 
+                       'Francesco', 'Antonio', 'Stefano', 'Riccardo', 'Davide', 'Federico',
+                       'Gabriele', 'Simone', 'Lorenzo', 'Paolo', 'Michele', 'Gianluca',
+                       'Massimo', 'Roberto', 'Enrico', 'Fabio', 'Daniele', 'Christian']
+    
+    first_names_female = ['Giulia', 'Sofia', 'Aurora', 'Chiara', 'Martina', 'Giorgia',
+                         'Francesca', 'Alessia', 'Valentina', 'Elena', 'Sara', 'Elisa',
+                         'Veronica', 'Laura', 'Silvia', 'Monica', 'Anna', 'Maria',
+                         'Cristina', 'Eleonora', 'Beatrice', 'Federica', 'Camilla', 'Noemi']
+    
+    last_names = ['Rossi', 'Bianchi', 'Romano', 'Colombo', 'Ricci', 'Marino', 'Greco',
+                 'Conti', 'Gallo', 'Ferrari', 'Russo', 'Lombardi', 'Moretti', 'Barbieri',
+                 'Fontana', 'Santoro', 'Mariani', 'Rinaldi', 'Gatti', 'Caruso', 'Ferri',
+                 'Leone', 'Longo', 'Gentile', 'Martinelli', 'Vitale', 'Lombardo', 'De Luca']
+    
+    gender = random.choice(['male', 'female'])
+    if gender == 'male':
+        first_name = random.choice(first_names_male)
+    else:
+        first_name = random.choice(first_names_female)
+    
+    return f"{first_name} {random.choice(last_names)}"
+
+def _generate_random_email(first_name, last_name):
+    """Generate a realistic email address"""
+    domains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'libero.it', 'virgilio.it']
+    formats = [
+        f"{first_name.lower()}.{last_name.lower()}",
+        f"{first_name.lower()}{last_name.lower()}",
+        f"{first_name.lower()}_{last_name.lower()}",
+        f"{first_name[0].lower()}{last_name.lower()}",
+        f"{first_name.lower()}{random.randint(10, 99)}"
+    ]
+    return f"{random.choice(formats)}@{random.choice(domains)}"
+
+def _generate_random_phone():
+    """Generate a random Italian phone number"""
+    prefixes = ['320', '327', '328', '329', '333', '334', '335', '336', '337', '338', '339',
+               '340', '347', '348', '349', '350', '351', '360', '366', '368', '370', '380',
+               '388', '389', '390', '391', '392', '393']
+    return f"+39{random.choice(prefixes)}{random.randint(100000, 999999)}"
+
+def _generate_random_city():
+    """Generate a random Italian city"""
+    cities = ['Roma', 'Milano', 'Napoli', 'Torino', 'Palermo', 'Genova', 'Bologna', 'Firenze',
+             'Bari', 'Catania', 'Venezia', 'Verona', 'Messina', 'Padova', 'Trieste', 'Brescia',
+             'Taranto', 'Prato', 'Modena', 'Reggio Calabria', 'Reggio Emilia', 'Perugia',
+             'Livorno', 'Ravenna', 'Cagliari', 'Foggia', 'Rimini', 'Salerno', 'Ferrara']
+    return random.choice(cities)
+
+
+def generate_test_profile(visitors=2):
+    """
+    Generate a complete test profile with representative and participants
+    Returns data only - doesn't save to database
+    """
+    from django.utils import timezone
+    
+    # Generate representative profile
+    full_name = _generate_random_name()
+    first_name, last_name = full_name.split(' ', 1)
+    
+    representative = {
+        'first_name': first_name,
+        'last_name': last_name,
+        'email': _generate_random_email(first_name, last_name),
+        'phone': _generate_random_phone(),
+        'country': 'Italy',
+        'city': _generate_random_city(),
+        'gender': random.choice(['M', 'F']),
+        'language': 'it',
+        'birth_date': (timezone.now().date() - timezone.timedelta(days=random.randint(7300, 14600))).isoformat()
+    }
+    
+    # Generate participants
+    participants = []
+    for i in range(visitors):
+        participant_name = _generate_random_name()
+        p_first_name, p_last_name = participant_name.split(' ', 1)
+        participants.append({
+            'first_name': p_first_name,
+            'last_name': p_last_name,
+            'email': _generate_random_email(p_first_name, p_last_name),
+            'phone': _generate_random_phone()
+        })
+    
+    return {
+        'representative': representative,
+        'participants': participants,
+        'visitors': visitors
+    }
+
+
 def _get_agency_from_request(request):
     """Helper to get agency from session."""
     from .models import Agency
@@ -907,14 +1250,28 @@ def checkout_redirect(request, hold_id):
     Two modes:
     - GET  → show hold details page with "Get Payment Link" button
     - POST → call Vatican /api/visit/reservation server-side, return epay URL
+    
+    Also handles direct epay link access with query parameters.
     """
     from .models import HeldSlot, BuyerProfile
+    from django.http import JsonResponse
 
     try:
         hold = HeldSlot.objects.select_related('task__agency').get(id=hold_id, status='held')
     except HeldSlot.DoesNotExist:
         return HttpResponse(_error_page("Hold not found or already expired."),
                            status=404, content_type='text/html')
+
+    # Handle direct epay link generation with token in query params
+    turnstile_token = request.GET.get('token') or request.GET.get('recaptcha')
+    if turnstile_token and request.method == 'GET':
+        # Convert GET with token to internal POST
+        from django.http import QueryDict
+        post_data = QueryDict(mutable=True)
+        post_data['recaptcha'] = turnstile_token
+        request.method = 'POST'
+        request._body = post_data.urlencode().encode('utf-8')
+        return _do_reservation(request, hold)
 
     if request.method == 'POST':
         return _do_reservation(request, hold)
@@ -973,14 +1330,17 @@ def checkout_redirect(request, hold_id):
 
   <div style="margin-top:20px">
     <label style="font-size:12px;color:#666;display:block;margin-bottom:6px">
-      reCAPTCHA Token (optional — paste from browser DevTools for instant payment)
+      Turnstile Token (required — paste from browser DevTools)
     </label>
-    <textarea id="recaptchaToken" placeholder="Paste reCAPTCHA token here, or leave empty to auto-solve..."
+    <textarea id="recaptchaToken" placeholder="Paste Turnstile token here..."
       style="width:100%;background:#1a1a1a;border:1px solid #262626;border-radius:10px;
              padding:10px;color:#fff;font-size:11px;font-family:monospace;resize:vertical;
              min-height:60px;outline:none"></textarea>
     <p style="font-size:11px;color:#444;margin-top:4px">
       To get token: open Vatican site → DevTools → Network → filter "reservation" → copy recaptcha value
+    </p>
+    <p style="font-size:11px;color:#444;margin-top:6px">
+      Payment link expires in ~10 minutes. Click generate again to regenerate.
     </p>
   </div>
 
@@ -1012,7 +1372,7 @@ async function getPaymentLink() {{
     if (data.payment_url) {{
       result.innerHTML = '<div class="info">✅ Reservation confirmed! Payment page opens in new tab.</div>' +
         '<a class="pay-link" href="' + data.payment_url + '" target="_blank">💳 Pay Now — epay.catholica.va</a>' +
-        '<p style="font-size:11px;color:#555;margin-top:8px">This is a clean payment link — no session needed. Share it or open it in any browser.</p>';
+        '<p style="font-size:11px;color:#555;margin-top:8px">Expires in ~10 minutes. Open it in any browser/device.</p>';
       result.style.display = 'block';
       window.open(data.payment_url, '_blank');
       btn.innerHTML = '✅ Payment Link Ready';
@@ -1046,6 +1406,7 @@ def _do_reservation(request, held):
     Call Vatican /api/visit/reservation server-side using held JSESSIONID.
     Vatican uses Cloudflare Turnstile (sitekey: 0x4AAAAAAB2Edz1zEK7o5Rj1).
     After success, Vatican redirects to epay.catholica.va — that's the payment URL.
+    If session expired, re-holds the slot first with a fresh session.
     """
     import json as _json, re
     from django.http import JsonResponse
@@ -1060,9 +1421,96 @@ def _do_reservation(request, held):
         req_body = _json.loads(request.body or '{}')
     except Exception:
         req_body = {}
-    turnstile_token = req_body.get('recaptcha', '')
+    turnstile_token = (req_body.get('recaptcha', '') or '').strip()
+    if not turnstile_token:
+        return JsonResponse({
+            'error': 'Missing Turnstile token (recaptcha). Open Vatican checkout in a real browser and paste the token.',
+        }, status=400)
 
-    participants = profile.to_participant_list(held.visitors, ticket_id=60, service_ids=[58])
+    # Step 0: Check session freshness and proactively re-hold if needed
+    from .hold_manager import _get_services, _build_recap_body, _fresh_re_hold
+    from django.utils import timezone
+    
+    # Check if session is stale (more than 10 minutes since last keepalive or recap is old)
+    session_is_stale = False
+    if held.last_keepalive_at:
+        minutes_since_keepalive = (timezone.now() - held.last_keepalive_at).total_seconds() / 60
+        if minutes_since_keepalive > 10:
+            session_is_stale = True
+            logger.warning(f"Session stale for HeldSlot #{held.id}: {minutes_since_keepalive:.1f} min since keepalive")
+    
+    # Proactively re-hold if session is stale before attempting epay generation
+    if session_is_stale:
+        logger.info(f"Proactively re-holding stale session for HeldSlot #{held.id}")
+        if _fresh_re_hold(held):
+            logger.info(f"Successfully re-held HeldSlot #{held.id} for epay generation")
+        else:
+            return JsonResponse({
+                'error': 'Session expired — slot needs to be re-held. The sweep will pick it up automatically within 30 seconds if still available.',
+                'expired': True,
+            }, status=400)
+
+    # Create session with current credentials
+    s = req_lib.Session()
+    s.cookies.set('JSESSIONID', held.jsessionid, domain='tickets.museivaticani.va')
+    if held.ticketmv:
+        s.cookies.set('ticketmv', held.ticketmv, domain='tickets.museivaticani.va')
+    try:
+        serverid = (_json.loads(held.notes or '{}') or {}).get('serverid')
+    except Exception:
+        serverid = None
+    if serverid:
+        s.cookies.set('SERVERID', serverid, domain='tickets.museivaticani.va')
+
+    services = _get_services(s, held.slot_id, int(held.ticket_id), held.visitors)
+
+    recap_headers = {
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': f'{VATICAN_BASE}/',
+        'Origin': VATICAN_BASE,
+        'Content-Type': 'application/json',
+    }
+
+    recap_body = _build_recap_body(held.slot_id, int(held.ticket_id), held.visitors, services)
+
+    recap_r = s.post(f'{VATICAN_BASE}/api/visit/recap', json=recap_body, headers=recap_headers, timeout=15)
+    if recap_r.status_code == 200:
+        new_recap_id = recap_r.json().get('recapId', '') or recap_r.json().get('id', '')
+        if new_recap_id:
+            held.recap_id = new_recap_id
+            held.save(update_fields=['recap_id'])
+    elif recap_r.status_code == 500 and 'scaduta' in recap_r.text.lower():
+        # Session fully expired — need fresh hold
+        return JsonResponse({
+            'error': 'Session expired — slot needs to be re-held. The sweep will pick it up automatically within 30 seconds if still available.',
+            'expired': True,
+        }, status=400)
+    else:
+        return JsonResponse({
+            'error': f'Recap failed ({recap_r.status_code})',
+            'raw': recap_r.text[:400],
+        }, status=400)
+
+    service_ids = []
+    if services:
+        svc_id = services[0].get('id')
+        if svc_id is not None:
+            service_ids = [svc_id]
+
+    participants = profile.to_participant_list(held.visitors, ticket_id=60, service_ids=service_ids)
+    if not held.recap_id:
+        return JsonResponse({'error': 'Missing recapId after recap refresh'}, status=400)
+
+    reservation_services = []
+    if services:
+        s0 = services[0]
+        reservation_services = [{
+            "id": s0.get("id", 58),
+            "name": s0.get("name", "Diritti di Prevendita"),
+            "price": s0.get("price", 5),
+            "quantity": held.visitors,
+        }]
 
     body = {
         "recaptcha": turnstile_token,
@@ -1075,7 +1523,7 @@ def _do_reservation(request, held):
             {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": held.visitors},
             {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
         ],
-        "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": held.visitors}],
+        "services": reservation_services,
         "representativeUser": profile.to_representative_user(),
         "participantUser": participants,
         "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
@@ -1099,6 +1547,8 @@ def _do_reservation(request, held):
     s.cookies.set('JSESSIONID', held.jsessionid, domain='tickets.museivaticani.va')
     if held.ticketmv:
         s.cookies.set('ticketmv', held.ticketmv, domain='tickets.museivaticani.va')
+    if serverid:
+        s.cookies.set('SERVERID', serverid, domain='tickets.museivaticani.va')
 
     try:
         r = s.post(
@@ -1139,15 +1589,30 @@ def _do_reservation(request, held):
                         siv_id = data.get('sivTransactionId') or data.get('transactionId')
                         mac = data.get('uppRedirectMac') or data.get('mac')
                         if siv_id and mac:
-                            jsid_epay = s.cookies.get('JSESSIONID', held.jsessionid)
-                            payment_url = f"https://epay.catholica.va/pay/public/init/{siv_id}/{mac}/it;jsessionid={jsid_epay}"
+                            payment_url = f"https://epay.catholica.va/pay/public/init/{siv_id}/{mac}/it"
                 except Exception:
                     pass
 
             if payment_url:
+                try:
+                    from django.utils import timezone
+                    import json as _json2
+                    notes = _json2.loads(held.notes or '{}')
+                    if not isinstance(notes, dict):
+                        notes = {}
+                except Exception:
+                    notes = {}
+                try:
+                    notes['payment_generated_at'] = timezone.now().isoformat()
+                except Exception:
+                    pass
+                try:
+                    held.notes = _json.dumps(notes) if notes else None
+                except Exception:
+                    pass
                 held.status = 'paying'
                 held.payment_url = payment_url
-                held.save(update_fields=['status', 'payment_url'])
+                held.save(update_fields=['status', 'payment_url', 'notes'])
                 return JsonResponse({'payment_url': payment_url, 'recap_id': held.recap_id})
             else:
                 return JsonResponse({
@@ -1168,191 +1633,6 @@ def _do_reservation(request, held):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
-
-def _error_page(msg):
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Error</title>
-<style>body{{font-family:sans-serif;background:#111;color:#fff;
-display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px;}}
-h2{{color:#ff4d4d;}}p{{color:#888;}}</style></head>
-<body><h2>⚠️ {msg}</h2><p>The hold session may have expired.</p></body></html>"""
-
-    """
-    Serves a page with a bookmarklet/button that injects the JSESSIONID
-    into the browser for tickets.museivaticani.va, then redirects to checkout.
-
-    Flow:
-    1. User opens this page
-    2. Page shows hold details + "Open Checkout" button
-    3. Button opens tickets.museivaticani.va in a new tab
-    4. After 2s (page loads), injects JSESSIONID via postMessage trick
-    5. Redirects that tab to /home/checkout
-    """
-    from .models import HeldSlot
-
-    try:
-        hold = HeldSlot.objects.get(id=hold_id, status='held')
-    except HeldSlot.DoesNotExist:
-        return HttpResponse(_error_page("Hold not found or already expired."),
-                           status=404, content_type='text/html')
-
-    jsessionid = hold.jsessionid
-    ticketmv = hold.ticketmv or ''
-
-    # Build the bookmarklet JS — injects cookie then goes to checkout
-    cookie_js = (
-        f"document.cookie='JSESSIONID={jsessionid};domain=.museivaticani.va;path=/;SameSite=Lax';"
-        + (f"document.cookie='ticketmv={ticketmv};domain=.museivaticani.va;path=/;SameSite=Lax';" if ticketmv else "")
-        + "window.location.href='https://tickets.museivaticani.va/home/checkout';"
-    )
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Vatican Checkout — {hold.date} {hold.slot_time}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ font-family: -apple-system, sans-serif; background: #0a0a0a; color: #fff;
-           min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }}
-    .card {{ background: #111; border: 1px solid #222; border-radius: 20px;
-             padding: 32px; max-width: 480px; width: 100%; }}
-    .badge {{ display: inline-block; background: #00E37C20; color: #00E37C;
-              border: 1px solid #00E37C40; border-radius: 20px; padding: 4px 12px;
-              font-size: 12px; font-weight: 600; margin-bottom: 20px; }}
-    h2 {{ font-size: 22px; font-weight: 700; margin-bottom: 8px; }}
-    .meta {{ color: #666; font-size: 14px; margin-bottom: 28px; }}
-    .row {{ display: flex; justify-content: space-between; padding: 12px 0;
-            border-bottom: 1px solid #1a1a1a; font-size: 14px; }}
-    .row:last-of-type {{ border-bottom: none; }}
-    .label {{ color: #666; }}
-    .value {{ color: #fff; font-weight: 500; }}
-    .total {{ color: #00E37C; font-size: 18px; font-weight: 700; }}
-    .btn {{ display: block; width: 100%; margin-top: 28px; padding: 16px;
-            background: #00E37C; color: #000; border: none; border-radius: 14px;
-            font-size: 16px; font-weight: 700; cursor: pointer; text-align: center;
-            text-decoration: none; transition: opacity 0.2s; }}
-    .btn:hover {{ opacity: 0.9; }}
-    .btn:active {{ transform: scale(0.98); }}
-    .step {{ margin-top: 20px; padding: 16px; background: #0f0f0f;
-             border: 1px solid #1a1a1a; border-radius: 12px; }}
-    .step p {{ font-size: 13px; color: #555; line-height: 1.6; }}
-    .step code {{ background: #1a1a1a; padding: 2px 6px; border-radius: 4px;
-                  font-size: 12px; color: #00E37C; }}
-    .warning {{ margin-top: 12px; font-size: 12px; color: #555; text-align: center; }}
-    #status {{ margin-top: 16px; padding: 12px; border-radius: 10px;
-               font-size: 13px; text-align: center; display: none; }}
-    .status-ok {{ background: #00E37C15; color: #00E37C; border: 1px solid #00E37C30; }}
-    .status-err {{ background: #ff4d4d15; color: #ff4d4d; border: 1px solid #ff4d4d30; }}
-  </style>
-</head>
-<body>
-<div class="card">
-  <div class="badge">🔒 SLOT HELD</div>
-  <h2>Vatican Checkout</h2>
-  <p class="meta">Hold #{hold.id} &bull; Session active</p>
-
-  <div class="row"><span class="label">Date</span><span class="value">{hold.date}</span></div>
-  <div class="row"><span class="label">Time</span><span class="value">{hold.slot_time}</span></div>
-  <div class="row"><span class="label">Visitors</span><span class="value">{hold.visitors}</span></div>
-  <div class="row"><span class="label">Total</span><span class="value total">&euro;{hold.total_price}</span></div>
-
-  <button class="btn" onclick="openCheckout()">💳 Open Vatican Checkout</button>
-
-  <div id="status"></div>
-
-  <div class="step">
-    <p>
-      Clicking the button opens Vatican in a new tab and injects your session automatically.<br><br>
-      If it redirects to the homepage instead of checkout, use the manual method:<br>
-      1. Open <code>tickets.museivaticani.va</code> in your browser<br>
-      2. Open DevTools → Console<br>
-      3. Paste the code below and press Enter
-    </p>
-  </div>
-
-  <div class="step" style="margin-top:8px">
-    <p style="color:#888;margin-bottom:8px;font-size:12px">Manual cookie injection:</p>
-    <code id="snippet" style="display:block;word-break:break-all;font-size:11px;color:#00E37C;cursor:pointer"
-          onclick="copySnippet()" title="Click to copy">
-      {cookie_js}
-    </code>
-    <p style="margin-top:8px;font-size:11px;color:#444">Click code to copy</p>
-  </div>
-
-  <p class="warning">⚠️ This link is single-use. Do not share it.</p>
-</div>
-
-<script>
-  var JSESSIONID = '{jsessionid}';
-  var TICKETMV = '{ticketmv}';
-  var vatTab = null;
-
-  function openCheckout() {{
-    var btn = document.querySelector('.btn');
-    btn.textContent = '⏳ Opening...';
-    btn.disabled = true;
-
-    // Open Vatican homepage first (needed to accept cookies for that domain)
-    vatTab = window.open('https://tickets.museivaticani.va/home', '_blank');
-
-    if (!vatTab) {{
-      showStatus('Popup blocked. Allow popups for this site and try again.', false);
-      btn.textContent = '💳 Open Vatican Checkout';
-      btn.disabled = false;
-      return;
-    }}
-
-    // After Vatican loads, inject cookie and navigate to checkout
-    var attempts = 0;
-    var interval = setInterval(function() {{
-      attempts++;
-      try {{
-        // Try to inject cookie via postMessage to the Vatican tab
-        // This works if Vatican doesn't block it
-        vatTab.postMessage({{
-          type: 'SET_SESSION',
-          jsessionid: JSESSIONID
-        }}, 'https://tickets.museivaticani.va');
-      }} catch(e) {{}}
-
-      // After 3 seconds, navigate to checkout with cookie in URL param
-      // Vatican's Angular app reads jsessionid from URL on init
-      if (attempts >= 6) {{
-        clearInterval(interval);
-        try {{
-          vatTab.location.href = 'https://tickets.museivaticani.va/home/checkout;jsessionid=' + JSESSIONID;
-        }} catch(e) {{
-          // Cross-origin block — use the direct URL approach
-          vatTab.close();
-          window.open('https://tickets.museivaticani.va/home/checkout;jsessionid=' + JSESSIONID, '_blank');
-        }}
-        showStatus('Vatican checkout opened in new tab. Complete your payment there.', true);
-        btn.textContent = '✅ Checkout Opened';
-      }}
-    }}, 500);
-  }}
-
-  function showStatus(msg, ok) {{
-    var el = document.getElementById('status');
-    el.textContent = msg;
-    el.className = ok ? 'status-ok' : 'status-err';
-    el.style.display = 'block';
-  }}
-
-  function copySnippet() {{
-    var code = document.getElementById('snippet').textContent.trim();
-    navigator.clipboard.writeText(code).then(function() {{
-      showStatus('✅ Copied! Paste in browser console on tickets.museivaticani.va', true);
-    }});
-  }}
-</script>
-</body>
-</html>"""
-
-    return HttpResponse(html, content_type='text/html')
 
 
 def _error_page(msg):

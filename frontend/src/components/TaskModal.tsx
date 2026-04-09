@@ -10,19 +10,25 @@ interface TaskModalProps {
     onClose: () => void;
     onSuccess: () => void;
     agencyId: number | null;
+    agencyPlan?: string;
 }
 
-export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: TaskModalProps) {
+const TIER_OPTIONS = [
+    { value: 'notify', label: '🔔 Notify Only', desc: 'Alert when tickets open', plans: ['free', 'pro', 'agency'] },
+    { value: 'hold',   label: '🔒 Notify + Hold', desc: 'Lock slot + send payment link', plans: ['pro', 'agency'] },
+    { value: 'snipe',  label: '🤖 Notify + Hold + Snipe', desc: 'Auto-book with stored profile', plans: ['agency'] },
+];
+
+export default function TaskModal({ isOpen, onClose, onSuccess, agencyId, agencyPlan = 'free' }: TaskModalProps) {
     const [formData, setFormData] = useState({
         site: 'vatican' as 'vatican',
         dates: [] as string[],
         preferred_times: '',
-        visitors: 2
+        visitors: 2,
+        tier: 'notify',
     });
     const [newDate, setNewDate] = useState('');
     const [loading, setLoading] = useState(false);
-
-    // Ticket selection state
     const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
 
     if (!isOpen) return null;
@@ -78,8 +84,8 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                 ticket_type: ticketType,
                 ticket_name: ticketNameValue,
                 language: languageValue || undefined,
-                notification_mode: 'available_only', // Default to only notify when available
-                // ✅ CRITICAL: Do NOT send ticket_id - let the system resolve fresh IDs
+                tier: formData.tier,
+                notification_mode: 'available_only',
             };
 
             await api.createTask(payload);
@@ -197,6 +203,46 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                                 You'll be notified of all available slots, but preferred times will be highlighted
                             </p>
                         </div>
+
+                        {/* Tier Selection */}
+                        <div>
+                            <label className="block text-xs font-medium text-[#888888] uppercase tracking-wider mb-2">Monitoring Tier</label>
+                            <div className="space-y-2">
+                                {TIER_OPTIONS.map(opt => {
+                                    const locked = !opt.plans.includes(agencyPlan);
+                                    return (
+                                        <button
+                                            key={opt.value}
+                                            type="button"
+                                            disabled={locked}
+                                            onClick={() => !locked && setFormData({ ...formData, tier: opt.value })}
+                                            className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border text-left transition-all
+                                                ${formData.tier === opt.value && !locked
+                                                    ? 'border-[#00E37C] bg-[#00E37C]/5 text-white'
+                                                    : locked
+                                                        ? 'border-[#262626] bg-[#111] text-[#444] cursor-not-allowed'
+                                                        : 'border-[#262626] bg-[#1a1a1a] text-[#888] hover:border-[#404040]'
+                                                }`}
+                                        >
+                                            <div>
+                                                <div className="text-sm font-medium">{opt.label}</div>
+                                                <div className="text-xs mt-0.5 opacity-70">{opt.desc}</div>
+                                            </div>
+                                            {locked && (
+                                                <span className="text-[10px] px-2 py-0.5 bg-[#262626] text-[#555] rounded-full uppercase shrink-0 ml-2">
+                                                    {opt.plans[0]} plan
+                                                </span>
+                                            )}
+                                            {!locked && formData.tier === opt.value && (
+                                                <div className="w-4 h-4 rounded-full bg-[#00E37C] flex items-center justify-center shrink-0 ml-2">
+                                                    <div className="w-2 h-2 rounded-full bg-[#050505]" />
+                                                </div>
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     </div>
 
                     <button
@@ -205,8 +251,7 @@ export default function TaskModal({ isOpen, onClose, onSuccess, agencyId }: Task
                         className="w-full bg-[#00E37C] text-[#050505] font-semibold py-3 rounded-xl hover:bg-[#00E37C]/90 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                     >
                         {!agencyId ? 'Initializing Session...' : loading ? 'Creating Monitor...' : 'Create Monitor'}
-                    </button>
-                </form>
+                    </button>                </form>
                 </div>
             </div>
         </div>

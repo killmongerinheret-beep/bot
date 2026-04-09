@@ -118,6 +118,16 @@ class MonitorTask(models.Model):
         ('snipe', 'Notify + Hold + Auto-Pay'),
     ]
 
+    PAY_MODE_CHOICES = [
+        ('link', 'Send payment link (user pays themselves)'),
+        ('auto', 'Auto-pay with stored card'),
+    ]
+
+    CHECKOUT_METHOD_CHOICES = [
+        ('api', 'API reservation (needs 2captcha token)'),
+        ('playwright', 'Playwright UI (no 2captcha, slower)'),
+    ]
+
     agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name='tasks')
     site = models.CharField(max_length=50, choices=SITE_CHOICES)
     area_name = models.CharField(max_length=255, help_text="e.g., Musei Vaticani or Colosseo")
@@ -153,6 +163,14 @@ class MonitorTask(models.Model):
     check_interval = models.IntegerField(default=60, help_text="Interval in seconds")
     
     tier = models.CharField(max_length=20, choices=TIER_CHOICES, default='notify')
+    pay_mode = models.CharField(max_length=10, choices=PAY_MODE_CHOICES, default='link',
+        help_text="snipe tier only: 'link' sends payment URL to Telegram, 'auto' pays with stored card")
+    checkout_method = models.CharField(max_length=12, choices=CHECKOUT_METHOD_CHOICES, default='api',
+        help_text="'api' = fast (needs 2captcha), 'playwright' = slow but free (no token needed)")
+    # Participant names for snipe mode — set via /setparticipants before sniping
+    # JSON list: [{"first_name": "John", "last_name": "Doe"}, ...]
+    participants_json = models.TextField(blank=True, null=True,
+        help_text="Participant names for snipe reservation (JSON list)")
     match_strategy = models.CharField(max_length=20, choices=MATCH_STRATEGY_CHOICES, default='any')
     notification_mode = models.CharField(max_length=20, choices=NOTIFICATION_MODE_CHOICES, default='any_change')
     
@@ -227,7 +245,8 @@ class BuyerProfile(models.Model):
         }
 
     def to_participant_list(self, visitors, ticket_id=60, service_ids=None):
-        service_ids = service_ids or [58]
+        if service_ids is None:
+            service_ids = [58]
         # Use uploaded participant names if available, otherwise repeat representative
         import json
         names = []
@@ -240,16 +259,24 @@ class BuyerProfile(models.Model):
         while len(names) < visitors:
             names.append({'first_name': self.first_name, 'last_name': self.last_name})
         names = names[:visitors]
-        return [
-            {
-                'name': p['first_name'],
-                'surname': p['last_name'],
+        out = []
+        for p in names:
+            if not isinstance(p, dict):
+                p = {}
+            first = (p.get('first_name') or p.get('name') or '').strip()
+            last = (p.get('last_name') or p.get('surname') or '').strip()
+            if not first:
+                first = (self.first_name or '').strip()
+            if not last:
+                last = (self.last_name or '').strip()
+            out.append({
+                'name': first,
+                'surname': last,
                 'id': ticket_id,
                 'ticketType': 'intero',
                 'services': service_ids,
-            }
-            for p in names
-        ]
+            })
+        return out
 
 
 class HeldSlot(models.Model):
@@ -289,6 +316,43 @@ class HeldSlot(models.Model):
 
     def hold_duration_minutes(self):
         return int((timezone.now() - self.hold_started_at).total_seconds() / 60)
+
+    def hold_duration_hours(self):
+        return int((timezone.now() - self.hold_started_at).total_seconds() / 3600)
+
+    def hours_until_expiry(self):
+        """Calculate hours remaining until 24-hour Vatican expiry"""
+        return max(0, 24 - self.hold_duration_hours())
+
+    def get_serverid(self):
+        """Extract SERVERID from notes field"""
+        try:
+            data = json.loads(self.notes or '{}')
+            return data.get('serverid', '')
+        except Exception:
+            return ''
+
+    def get_jsessionid(self):
+        """Get JSESSIONID from stored field"""
+        return self.jsessionid or ''
+
+    def get_ticketmv(self):
+        """Get ticketmv from stored field"""
+        return self.ticketmv or ''
+
+    def is_session_fresh(self):
+        """Check if session is fresh enough for reservation"""
+        from django.core.cache import cache
+        import time
+        
+        session_cache_key = f"vatican_session_fresh_{self.jsessionid[:16]}"
+        session_created = cache.get(session_cache_key)
+        
+        if session_created:
+            session_age = time.time() - session_created
+            return session_age < 20 * 3600  # Less than 20 hours old
+        
+        return True  # Assume fresh if no cache data
 
 
 class TelegramGroup(models.Model):
@@ -359,3 +423,47 @@ class TelegramGroup(models.Model):
         self.status = 'suspended'
         self.rejection_reason = reason
         self.save()
+
+
+class BulkHoldConfig(models.Model):
+    """
+    Configuration for bulk slot locking.
+    Scans a date range and recaps every available slot matching the time window.
+    Recap = server-side lock for ~55 min. Keepalive re-recaps every 25 min.
+    No Turnstile needed — only required when completing a reservation.
+    """
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name='bulk_hold_configs')
+    # Date range (inclusive), stored as YYYY-MM-DD
+    date_from = models.DateField(help_text='Start date (inclusive)')
+    date_to = models.DateField(help_text='End date (inclusive)')
+    # Time window to lock (e.g. 08:30 to 14:30)
+    time_from = models.CharField(max_length=5, default='08:00', help_text='HH:MM')
+    time_to = models.CharField(max_length=5, default='17:00', help_text='HH:MM')
+    # Visitors per slot
+    visitors = models.PositiveIntegerField(default=2)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Stats
+    total_locked = models.IntegerField(default=0)
+    last_scan_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'bulk_hold_configs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return (f"BulkHold #{self.id} | {self.agency.name} | "
+                f"{self.date_from}→{self.date_to} | {self.time_from}-{self.time_to} | "
+                f"{self.visitors}v | {'active' if self.is_active else 'paused'}")
+
+    def date_range(self):
+        """Yield all dates in range as DD/MM/YYYY strings."""
+        from datetime import timedelta
+        current = self.date_from
+        while current <= self.date_to:
+            yield current.strftime('%d/%m/%Y')
+            current += timedelta(days=1)
+
+    def time_in_window(self, time_str: str) -> bool:
+        """Check if a HH:MM time is within the configured window."""
+        return self.time_from <= time_str <= self.time_to

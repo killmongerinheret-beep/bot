@@ -11,6 +11,7 @@ import LogsView from '@/components/LogsView';
 import Sidebar from '@/components/Sidebar';
 import LoginPage from '@/components/LoginPage';
 import { motion, AnimatePresence } from 'framer-motion';
+import HoldsView from '@/components/HoldsView';
 import {
   Plus,
   Globe,
@@ -18,6 +19,7 @@ import {
   Zap,
   BarChart3,
   Building2,
+  Lock,
   LogOut,
   Shield
 } from 'lucide-react';
@@ -27,7 +29,8 @@ export default function DashboardPage() {
   const [tasks, setTasks] = useState<MonitorTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'matrix' | 'logs' | 'settings'>('matrix');
+  const [activeTab, setActiveTab] = useState<'matrix' | 'logs' | 'holds' | 'settings'>('matrix');
+  const [heldSlots, setHeldSlots] = useState<any[]>([]);
   
   // Authentication state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -42,6 +45,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (isAuthenticated && currentAgency) {
       loadTasks();
+      loadHeldSlots();
     }
   }, [isAuthenticated, currentAgency]);
 
@@ -103,13 +107,26 @@ export default function DashboardPage() {
 
   const loadTasks = async () => {
     if (!currentAgency) return;
-    
     try {
       const tasksData = await api.getTasks(currentAgency.id);
-      console.log('✅ Tasks loaded for agency:', currentAgency.name, tasksData.length, 'tasks');
       setTasks(tasksData);
     } catch (error) {
       console.error('❌ Failed to load tasks:', error);
+    }
+  };
+
+  const loadHeldSlots = async () => {
+    try {
+      const token = localStorage.getItem('session_token');
+      const res = await fetch('/api/v1/holds/', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setHeldSlots(Array.isArray(data) ? data : data.results || []);
+      }
+    } catch (err) {
+      console.error('Failed to load held slots:', err);
     }
   };
 
@@ -168,7 +185,7 @@ export default function DashboardPage() {
 
   const activeTasks = tasks.filter(t => t.is_active).length;
   const totalTasks = tasks.length;
-  const taskLimit = currentAgency.plan === 'free' ? 2 : currentAgency.plan === 'pro' ? 10 : 50;
+  // No monitor count limits — plan gates tier features (hold/snipe), not quantity
 
   return (
     <div className="relative flex h-screen overflow-hidden bg-[#050505]">
@@ -188,7 +205,7 @@ export default function DashboardPage() {
               </div>
               <h1 className="text-lg font-semibold text-white truncate max-w-[180px]">{currentAgency.name}</h1>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <span className="text-xs text-[#888]">{tasks.length}/{taskLimit}</span>
+                <span className="text-xs text-[#888]">{tasks.length} monitors</span>
                 <span className="text-[10px] px-1.5 py-0.5 bg-[#00E37C]/10 text-[#00E37C] rounded-full uppercase font-semibold">{currentAgency.plan}</span>
               </div>
             </div>
@@ -203,8 +220,7 @@ export default function DashboardPage() {
               </button>
               <button
                 onClick={() => setIsModalOpen(true)}
-                disabled={tasks.length >= taskLimit}
-                className="flex items-center gap-1.5 px-3 py-2 bg-[#00E37C] text-[#050505] text-sm font-semibold rounded-xl disabled:opacity-40"
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#00E37C] text-[#050505] text-sm font-semibold rounded-xl"
               >
                 <Plus className="w-4 h-4" />
                 New
@@ -225,8 +241,8 @@ export default function DashboardPage() {
             </div>
             <div className="flex items-center gap-3">
               <div className="px-3 py-1.5 bg-[#0F0F0F] border border-[#262626] rounded-full flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${tasks.length >= taskLimit ? 'bg-red-500' : 'bg-[#00E37C]'}`} />
-                <span className="text-sm font-medium text-[#888888]">{tasks.length}/{taskLimit} Monitors</span>
+                <div className="w-2 h-2 rounded-full bg-[#00E37C]" />
+                <span className="text-sm font-medium text-[#888888]">{tasks.length} Monitors</span>
                 <span className="text-xs px-1.5 py-0.5 bg-[#00E37C]/10 text-[#00E37C] rounded-full uppercase font-semibold">{currentAgency.plan}</span>
               </div>
               {currentUser?.is_super_admin && (
@@ -238,8 +254,8 @@ export default function DashboardPage() {
                 <LogOut className="w-4 h-4" /> Logout
               </button>
               <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                onClick={() => setIsModalOpen(true)} disabled={tasks.length >= taskLimit}
-                className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+                onClick={() => setIsModalOpen(true)}
+                className="btn-primary">
                 <Plus className="w-4 h-4" /><span>New Monitor</span>
               </motion.button>
             </div>
@@ -266,6 +282,27 @@ export default function DashboardPage() {
             ))}
           </motion.div>
 
+          {/* Tab switcher */}
+          <div className="flex gap-2 mb-6">
+            {[
+              { id: 'matrix', label: '📋 Monitors' },
+              { id: 'holds', label: `🔒 Held Slots (${heldSlots.length})` },
+              { id: 'logs', label: '📊 Logs' },
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => { setActiveTab(tab.id as any); if (tab.id === 'holds') loadHeldSlots(); }}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  activeTab === tab.id
+                    ? 'bg-[#00E37C] text-[#050505]'
+                    : 'bg-[#1a1a1a] border border-[#262626] text-[#888] hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
           {/* Content */}
           <AnimatePresence mode="wait">
             <motion.div key={activeTab} initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ duration: 0.3 }}>
@@ -283,7 +320,7 @@ export default function DashboardPage() {
                       </div>
                       <h3 className="text-lg font-semibold text-white mb-2">No Active Monitors</h3>
                       <p className="text-[#888888] text-sm max-w-xs mb-5">Create a monitor to start tracking Vatican ticket availability.</p>
-                      <button onClick={() => setIsModalOpen(true)} disabled={tasks.length >= taskLimit} className="btn-primary disabled:opacity-50">
+                      <button onClick={() => setIsModalOpen(true)} className="btn-primary">
                         <Plus className="w-4 h-4" /> Create Monitor
                       </button>
                     </div>
@@ -295,12 +332,34 @@ export default function DashboardPage() {
                   <LogsView agencyId={currentAgency.id} />
                 </motion.div>
               )}
+              {activeTab === 'holds' && (
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                  {/* Summary bar */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                    {[
+                      { label: 'Total Slots', val: heldSlots.length },
+                      { label: 'April Slots', val: heldSlots.filter((h:any) => h.date?.includes('/04/')).length },
+                      { label: 'May Slots', val: heldSlots.filter((h:any) => h.date?.includes('/05/')).length },
+                      { label: 'Total Value', val: `€${heldSlots.reduce((s:number,h:any) => s + parseFloat(h.total_price||0), 0).toLocaleString()}` },
+                    ].map(({label, val}) => (
+                      <div key={label} className="bg-[#0F0F0F] border border-[#262626] rounded-2xl p-4 text-center">
+                        <div className="text-xl font-bold text-white">{val}</div>
+                        <div className="text-xs text-[#666] mt-1">{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mb-4 p-3 bg-purple-500/10 border border-purple-500/20 rounded-xl">
+                    <p className="text-xs text-purple-300">🔒 Exclusive — slots held by HydraBot. Anyone wanting tickets must contact you directly.</p>
+                  </div>
+                  <HoldsView slots={heldSlots} />
+                </motion.div>
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
       </main>
 
-      <TaskModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSuccess={refreshTasks} agencyId={currentAgency.id} />
+      <TaskModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSuccess={refreshTasks} agencyId={currentAgency.id} agencyPlan={currentAgency.plan} />
     </div>
   );
 }

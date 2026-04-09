@@ -230,6 +230,7 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             
             # ✅ SMART NOTIFICATION: Only alert on state CHANGE (closed → open)
             should_alert = status_changed_to_open and not is_first_check
+            should_trigger_hold = is_now_available and (status_changed_to_open or is_first_check)
             
             # 🛡️ SPAM GUARD: Cooldown key (stable - no ticket_id)
             alert_cooldown_key = f"alert_cooldown:{task.id}:{date}"
@@ -252,23 +253,47 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
                 logger.info(f"ℹ️ {ticket_name} still AVAILABLE - no alert needed")
             
             # ✅ AUTO-HOLD: Grab the slot immediately when it opens
-            if should_alert and slots:
+            if should_trigger_hold and slots and task.tier in ('hold', 'snipe'):
                 try:
                     from .tasks_hold import auto_hold_slot
-                    first_slot = slots[0] if isinstance(slots[0], dict) else {'time': slots[0], 'id': None}
-                    slot_time = first_slot.get('time', slots[0]) if isinstance(first_slot, dict) else slots[0]
-                    slot_id = first_slot.get('id') if isinstance(first_slot, dict) else None
-                    if slot_id:
-                        auto_hold_slot.delay(
-                            task_id=task.id,
-                            date=date,
-                            slot_id=slot_id,
-                            slot_time=slot_time,
-                            ticket_id=str(resolved_ticket_id or ticket_id or ''),
-                            ticket_name=ticket_name,
-                            visitors=task.visitors,
-                        )
-                        logger.info(f"🎯 Auto-hold triggered for {date} {slot_time} (task #{task.id})")
+                    preferred = task.preferred_times or []
+                    match_strategy = getattr(task, 'match_strategy', 'any') or 'any'
+
+                    slot_dicts = []
+                    for s in slots:
+                        if isinstance(s, dict):
+                            slot_dicts.append(s)
+                        else:
+                            slot_dicts.append({'time': s, 'id': None})
+
+                    available_times = [str(s.get('time') or '') for s in slot_dicts]
+                    if preferred:
+                        if match_strategy == 'all' and not all(t in available_times for t in preferred):
+                            logger.info(f"⏭️ Skipping auto-hold: not all preferred times available for task #{task.id}")
+                        else:
+                            slot_dicts = [s for s in slot_dicts if (s.get('time') in preferred)]
+                            slot_dicts.sort(key=lambda x: preferred.index(x.get('time')) if x.get('time') in preferred else 9999)
+
+                    if slot_dicts:
+                        best = slot_dicts[0]
+                        slot_time = best.get('time')
+                        slot_id = best.get('id')
+                        if slot_id:
+                            hold_cooldown_key = f"hold_cooldown:{task.id}:{date}:{slot_id}"
+                            if cache.get(hold_cooldown_key):
+                                logger.info(f"⏳ SUPPRESSED HOLD: cooldown active for task #{task.id} {date} {slot_time}")
+                            else:
+                                cache.set(hold_cooldown_key, "sent", timeout=600)
+                                auto_hold_slot.delay(
+                                    task_id=task.id,
+                                    date=date,
+                                    slot_id=slot_id,
+                                    slot_time=slot_time,
+                                    ticket_id=str(resolved_ticket_id or ticket_id or ''),
+                                    ticket_name=ticket_name,
+                                    visitors=task.visitors,
+                                )
+                                logger.info(f"🎯 Auto-hold triggered for {date} {slot_time} (task #{task.id})")
                 except Exception as e:
                     logger.error(f"❌ Auto-hold trigger failed: {e}")
 

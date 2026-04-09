@@ -3,7 +3,7 @@
 import React from 'react';
 import { LayoutDashboard, Terminal, Zap } from 'lucide-react';
 
-type TabType = 'matrix' | 'logs' | 'settings';
+type TabType = 'matrix' | 'logs' | 'settings' | 'holds';
 
 interface SidebarProps {
     activeTab: TabType;

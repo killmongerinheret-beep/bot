@@ -33,6 +33,7 @@ if not BOT_TOKEN:
 
 def kb_main():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎫 Book a Ticket", callback_data='book')],
         [InlineKeyboardButton("➕ Add Monitor", callback_data='add')],
         [InlineKeyboardButton("📋 List Monitors", callback_data='list')],
         [InlineKeyboardButton("🗑️ Remove Monitor", callback_data='remove')],
@@ -92,16 +93,12 @@ def kb_ticket():
     ])
 
 def kb_tier(plan='free'):
-    """Show only tiers available for the agency's plan."""
-    rows = [[InlineKeyboardButton("🔔 Notify Only", callback_data='tier:notify')]]
-    if plan in ('pro', 'agency'):
-        rows.append([InlineKeyboardButton("🔒 Notify + Hold", callback_data='tier:hold')])
-    else:
-        rows.append([InlineKeyboardButton("🔒 Hold — Pro plan required 🔐", callback_data='tier:locked_hold')])
+    """Two tiers: Notify or Snipe. Hold removed — Vatican doesn't support server-side holds."""
+    rows = [[InlineKeyboardButton("🔔 Notify Only — alert when slot opens", callback_data='tier:notify')]]
     if plan == 'agency':
-        rows.append([InlineKeyboardButton("🤖 Notify + Hold + Snipe", callback_data='tier:snipe')])
+        rows.append([InlineKeyboardButton("⚡ Snipe — auto-book instantly", callback_data='tier:snipe')])
     else:
-        rows.append([InlineKeyboardButton("🤖 Snipe — Agency plan required 🔐", callback_data='tier:locked_snipe')])
+        rows.append([InlineKeyboardButton("⚡ Snipe — Agency plan required 🔐", callback_data='tier:locked_snipe')])
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel')])
     return InlineKeyboardMarkup(rows)
 
@@ -116,13 +113,18 @@ def kb_language():
     ])
 
 def kb_times():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌅 Morning  09:00–12:00", callback_data='time:morning')],
-        [InlineKeyboardButton("🌞 Afternoon 12:00–15:00", callback_data='time:afternoon')],
-        [InlineKeyboardButton("🌆 Late     15:00–17:00", callback_data='time:late')],
-        [InlineKeyboardButton("⏰ All Times",             callback_data='time:all')],
-        [InlineKeyboardButton("❌ Cancel",                callback_data='cancel')],
-    ])
+    """Exact Vatican time slots — 30 min intervals 09:00–17:00, plus Any."""
+    slots = ['09:00','09:30','10:00','10:30','11:00','11:30',
+             '12:00','12:30','13:00','13:30','14:00','14:30',
+             '15:00','15:30','16:00','16:30','17:00']
+    rows = []
+    # 3 per row
+    for i in range(0, len(slots), 3):
+        row = [InlineKeyboardButton(t, callback_data=f'time:{t}') for t in slots[i:i+3]]
+        rows.append(row)
+    rows.append([InlineKeyboardButton("⏰ Any Time", callback_data='time:any')])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel')])
+    return InlineKeyboardMarkup(rows)
 
 def kb_confirm():
     return InlineKeyboardMarkup([
@@ -140,6 +142,7 @@ async def get_agency(chat_id):
     from asgiref.sync import sync_to_async
 
     def _lookup():
+        # 1. Check approved group with agency linked
         group = TelegramGroup.objects.filter(
             chat_id=str(chat_id),
             status='approved',
@@ -147,12 +150,57 @@ async def get_agency(chat_id):
         ).select_related('agency').first()
         if group:
             return group.agency
-        return Agency.objects.filter(telegram_chat_id=str(chat_id)).first()
+
+        # 2. Check approved group without agency — still allow access, use first agency
+        group_no_agency = TelegramGroup.objects.filter(
+            chat_id=str(chat_id),
+            status='approved',
+        ).first()
+        if group_no_agency:
+            # Link to first available agency automatically
+            first_agency = Agency.objects.filter(
+                is_active=True
+            ).exclude(plan='system').first()
+            if first_agency:
+                group_no_agency.agency = first_agency
+                group_no_agency.save(update_fields=['agency'])
+                return first_agency
+
+        # 3. Check Agency.telegram_chat_id (legacy)
+        agency = Agency.objects.filter(telegram_chat_id=str(chat_id)).first()
+        if agency:
+            return agency
+
+        # 4. Admin personal chat — always allow access
+        admin_ids = [a.strip() for a in os.getenv('ADMIN_TELEGRAM_IDS', '').split(',') if a.strip()]
+        if str(chat_id) in admin_ids:
+            # Create a personal group entry for admin if not exists
+            group, created = TelegramGroup.objects.get_or_create(
+                chat_id=str(chat_id),
+                defaults={
+                    'chat_type': 'private',
+                    'chat_title': 'Admin',
+                    'status': 'approved',
+                    'notification_enabled': True,
+                }
+            )
+            if not group.agency:
+                first_agency = Agency.objects.filter(
+                    is_active=True
+                ).exclude(plan='system').first()
+                if first_agency:
+                    group.agency = first_agency
+                    group.save(update_fields=['agency'])
+                    return first_agency
+            return group.agency
+
+        return None
 
     return await sync_to_async(_lookup)()
 
 def summary(ud):
     lang_names = {'ENG':'🇬🇧 English','ITA':'🇮🇹 Italiano','FRA':'🇫🇷 Français','DEU':'🇩🇪 Deutsch','SPA':'🇪🇸 Español'}
+    tier_icons = {'notify': '🔔 Notify Only', 'snipe': '⚡ Snipe'}
     lines = [
         f"📅 Date: {ud.get('date','—')}",
         f"👥 Visitors: {ud.get('visitors','—')}",
@@ -160,7 +208,14 @@ def summary(ud):
     ]
     if ud.get('language'):
         lines.append(f"🌍 Language: {lang_names.get(ud['language'], ud['language'])}")
-    lines.append(f"⏰ Times: {ud.get('times_label','All Times')}")
+    lines.append(f"🎯 Mode: {tier_icons.get(ud.get('tier','notify'), ud.get('tier','notify'))}")
+    if ud.get('snipe_participants'):
+        names = ', '.join(f"{p['first_name']} {p['last_name']}" for p in ud['snipe_participants'])
+        lines.append(f"👤 Participants: {names}")
+    if ud.get('checkout_method'):
+        m = ud['checkout_method']
+        lines.append(f"⚙️ Checkout: {'🚀 API' if m == 'api' else '🌐 Playwright'}")
+    lines.append(f"⏰ Time: {ud.get('times_label','Any')}")
     return '\n'.join(lines)
 
 
@@ -170,8 +225,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     agency = await get_agency(chat_id)
     if not agency:
+        admin_ids = [a.strip() for a in os.getenv('ADMIN_TELEGRAM_IDS', '').split(',') if a.strip()]
+        is_admin = str(chat_id) in admin_ids
         await update.message.reply_text(
-            f"⚠️ This chat is not linked to an agency.\n\nChat ID: `{chat_id}`\nContact admin to link it.",
+            f"⚠️ This chat is not linked to an agency.\n\n"
+            f"Chat ID: `{chat_id}`\n"
+            f"{'✅ You are admin — but no agencies exist yet.' if is_admin else 'Contact admin to link it.'}\n\n"
+            f"Admin: send `/pending` to see pending groups.",
             parse_mode='Markdown'
         )
         return
@@ -475,10 +535,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ud['ticket_name'] = "Musei Vaticani - Biglietti d'ingresso"
         ud['ticket_label'] = 'Standard Entry'
         ud['language'] = None
-        ud['step'] = 'times'
+        ud['step'] = 'tier'
         await query.edit_message_text(
-            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n✅ Ticket: Standard Entry\n\n⏰ Preferred times:",
-            reply_markup=kb_times()
+            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n✅ Ticket: Standard Entry\n\n🎯 Select monitoring mode:",
+            reply_markup=kb_tier(ud.get('agency_plan', 'free'))
         )
         return
 
@@ -497,50 +557,77 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = data.split(':')[1]
         ud['language'] = lang
         ud['ticket_name'] = f'Musei Vaticani - Visite Guidate ({lang})'
-        ud['step'] = 'times'
+        ud['step'] = 'tier'
         await query.edit_message_text(
-            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n✅ Ticket: Guided Tour\n✅ Language: {lang}\n\n⏰ Preferred times:",
-            reply_markup=kb_times()
+            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n✅ Ticket: Guided Tour ({lang})\n\n🎯 Select monitoring mode:",
+            reply_markup=kb_tier(ud.get('agency_plan', 'free'))
         )
         return
 
     if data.startswith('time:'):
-        slot = data.split(':')[1]
-        time_map = {
-            'morning':   (['09:00','09:30','10:00','10:30','11:00','11:30'], 'Morning 09:00–12:00'),
-            'afternoon': (['12:00','12:30','13:00','13:30','14:00','14:30'], 'Afternoon 12:00–15:00'),
-            'late':      (['15:00','15:30','16:00','16:30'],                 'Late 15:00–17:00'),
-            'all':       (['09:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00'], 'All Times'),
-        }
-        times, label = time_map[slot]
+        slot = data.split(':', 1)[1]
+        if slot == 'any':
+            times = ['09:00','09:30','10:00','10:30','11:00','11:30',
+                     '12:00','12:30','13:00','13:30','14:00','14:30',
+                     '15:00','15:30','16:00','16:30','17:00']
+            label = 'Any Time'
+        else:
+            times = [slot]
+            label = slot
         ud['preferred_times'] = times
         ud['times_label'] = label
-        ud['step'] = 'tier'
+        ud['step'] = 'confirm'
         await query.edit_message_text(
-            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n✅ Ticket: {ud['ticket_label']}\n✅ Times: {label}\n\n🎯 Select monitoring tier:",
-            reply_markup=kb_tier(ud.get('agency_plan', 'free'))
+            f"📋 *Confirm New Monitor*\n\n{summary(ud)}\n\nAdd this monitor?",
+            parse_mode='Markdown',
+            reply_markup=kb_confirm()
         )
         return
 
     if data.startswith('tier:locked_'):
         locked = data.split('tier:locked_')[1]
-        plan_needed = 'Pro' if locked == 'hold' else 'Agency'
-        await query.answer(f"🔐 {plan_needed} plan required. Contact admin to upgrade.", show_alert=True)
+        await query.answer("🔐 Agency plan required. Contact admin to upgrade.", show_alert=True)
         return
 
     if data.startswith('tier:'):
         tier = data.split(':')[1]
         tier_labels = {
             'notify': '🔔 Notify Only',
-            'hold':   '🔒 Notify + Hold',
-            'snipe':  '🤖 Notify + Hold + Snipe',
+            'snipe':  '⚡ Snipe',
         }
         ud['tier'] = tier
         ud['tier_label'] = tier_labels.get(tier, tier)
-        ud['step'] = 'confirm'
+
+        if tier == 'snipe':
+            # Collect participant names before time selection
+            visitors = ud.get('visitors', 1)
+            ud['snipe_participants'] = []
+            ud['step'] = 'snipe_name'
+            await query.edit_message_text(
+                f"⚡ *Snipe — {visitors} visitor{'s' if visitors > 1 else ''}*\n\n"
+                f"Enter the name of each participant for the Vatican booking.\n\n"
+                f"👤 Participant 1/{visitors} — send *First Last*:\n_(e.g. `Mario Rossi`)_",
+                parse_mode='Markdown'
+            )
+        else:
+            # Notify: go straight to time selection
+            ud['step'] = 'times'
+            await query.edit_message_text(
+                f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n"
+                f"✅ Ticket: {ud.get('ticket_label','')}\n✅ Mode: {ud['tier_label']}\n\n"
+                f"⏰ Select preferred time:",
+                reply_markup=kb_times()
+            )
+        return
+
+    if data.startswith('checkout:'):
+        method = data.split(':')[1]  # 'api' or 'playwright'
+        ud['checkout_method'] = method
+        method_label = '🚀 API (fast)' if method == 'api' else '🌐 Playwright (free)'
+        ud['step'] = 'times'
         await query.edit_message_text(
-            f"📋 Confirm New Monitor\n\n{summary(ud)}\n🎯 Tier: {ud['tier_label']}\n\nAdd this monitor?",
-            reply_markup=kb_confirm()
+            f"✅ Checkout: {method_label}\n\n⏰ Select the time slot to snipe:",
+            reply_markup=kb_times()
         )
         return
 
@@ -566,6 +653,55 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Status ──
     if data == 'status':
         await do_status(query, context)
+        return
+
+    # ── Pay Hold ──
+    if data.startswith('pay_hold:'):
+        hold_id = int(data.split(':')[1])
+        await do_pay_hold(query, context, hold_id)
+        return
+
+    # ── Book flow ──
+    if data == 'book':
+        await do_book_start(query, context)
+        return
+
+    if data.startswith('book_date:'):
+        date_str = data.split(':', 1)[1]  # DD/MM/YYYY
+        await do_book_select_slot(query, context, date_str)
+        return
+
+    if data.startswith('book_slot_time:'):
+        # format: book_slot_time:{date}:{slot_time}
+        parts = data.split(':', 2)
+        date_str = parts[1]
+        slot_time = parts[2]
+        await do_book_show_visitor_options(query, context, date_str, slot_time)
+        return
+
+    if data.startswith('book_slot:'):
+        # format: book_slot:{hold_id}
+        hold_id = int(data.split(':')[1])
+        await do_book_select_visitors(query, context, hold_id)
+        return
+
+    if data.startswith('book_vis:'):
+        # format: book_vis:{hold_id}:{visitors}
+        _, hold_id_str, vis_str = data.split(':')
+        hold_id = int(hold_id_str)
+        visitors = int(vis_str)
+        await do_book_ask_names(query, context, hold_id, visitors)
+        return
+
+    if data.startswith('book_confirm:'):
+        hold_id = int(data.split(':')[1])
+        await do_book_generate_link(query, context, hold_id)
+        return
+
+    if data == 'book_cancel':
+        ud.pop('booking', None)
+        ud['step'] = None
+        await query.edit_message_text("❌ Booking cancelled.", reply_markup=kb_back())
         return
 
 
@@ -707,6 +843,79 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Snipe setup: collect participant names inline ──
+    if step == 'snipe_name':
+        visitors = ud.get('visitors', 1)
+        participants = ud.get('snipe_participants', [])
+
+        parts = text.split(None, 1)
+        first = parts[0].strip()
+        last = parts[1].strip() if len(parts) > 1 else ''
+        participants.append({'first_name': first, 'last_name': last})
+        ud['snipe_participants'] = participants
+
+        if len(participants) < visitors:
+            await update.message.reply_text(
+                f"✅ {first} {last}\n\n"
+                f"👤 Participant {len(participants)+1}/{visitors} — send *First Last* name:",
+                parse_mode='Markdown'
+            )
+        else:
+            # All names collected — ask checkout method
+            preview = '\n'.join(f"  {i+1}. {p['first_name']} {p['last_name']}" for i, p in enumerate(participants))
+            ud['step'] = 'snipe_checkout_method'
+            await update.message.reply_text(
+                f"✅ *{visitors} participant{'s' if visitors > 1 else ''} set:*\n{preview}\n\n"
+                f"⚙️ *Checkout method:*\n\n"
+                f"🚀 *API* — fast (~30s), needs 2captcha balance (~$0.001/booking)\n"
+                f"🌐 *Playwright* — slow (~3min), free (browser solves Turnstile)\n",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚀 API (fast, needs 2captcha)", callback_data='checkout:api')],
+                    [InlineKeyboardButton("🌐 Playwright (free, slower)", callback_data='checkout:playwright')],
+                ])
+            )
+        return
+
+    # ── Booking: collect participant names one by one ──
+    if step == 'book_name':
+        booking = ud.get('booking', {})
+        names = booking.get('names', [])
+        needed = booking.get('visitors', 1)
+        collected = len(names)
+
+        # Parse "FirstName LastName"
+        parts = text.split(None, 1)
+        first = parts[0].strip()
+        last = parts[1].strip() if len(parts) > 1 else ''
+        names.append({'first_name': first, 'last_name': last})
+        booking['names'] = names
+        ud['booking'] = booking
+
+        if len(names) < needed:
+            await update.message.reply_text(
+                f"✅ {first} {last}\n\n"
+                f"👤 Participant {len(names)+1}/{needed} — send *First Last* name:",
+                parse_mode='Markdown'
+            )
+        else:
+            # All names collected — show confirm
+            hold_id = booking['hold_id']
+            preview = '\n'.join(f"  {i+1}. {n['first_name']} {n['last_name']}" for i, n in enumerate(names))
+            await update.message.reply_text(
+                f"✅ All {needed} participants collected:\n\n{preview}\n\n"
+                f"📅 {booking['date']} {booking['slot_time']}\n"
+                f"👥 {needed} visitors | €{booking['total']}\n\n"
+                f"Generate payment link?",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💳 Generate Payment Link", callback_data=f"book_confirm:{hold_id}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="book_cancel")],
+                ])
+            )
+            ud['step'] = None
+        return
+
     # Ignore other text during flow
     if step:
         await update.message.reply_text("Please use the buttons above, or /cancel to stop.")
@@ -744,7 +953,10 @@ async def do_create_monitor(query, context):
             )
             return
 
+        import json as _json
         tier = ud.get('tier', 'notify')
+        snipe_participants = ud.get('snipe_participants', [])
+        checkout_method = ud.get('checkout_method', 'api')
         task = await sync_to_async(MonitorTask.objects.create)(
             agency=agency,
             site='vatican',
@@ -759,6 +971,8 @@ async def do_create_monitor(query, context):
             language=language,
             check_interval=60,
             tier=tier,
+            checkout_method=checkout_method,
+            participants_json=_json.dumps(snipe_participants) if snipe_participants else None,
             match_strategy='any',
             notification_mode='available_only',
             is_active=True,
@@ -774,8 +988,14 @@ async def do_create_monitor(query, context):
             logger.warning(f"Could not trigger immediate check: {e}")
 
         ud['step'] = None
+        tier = ud.get('tier', 'notify')
+        extra = ''
+        if tier == 'snipe' and snipe_participants:
+            names_preview = ', '.join(f"{p['first_name']} {p['last_name']}" for p in snipe_participants)
+            extra = f"\n👥 Participants: {names_preview}"
         await query.edit_message_text(
-            f"✅ Monitor created! (Task #{task.id})\n\n{summary(ud)}\n\n🔔 You'll be notified when tickets are available.",
+            f"✅ Monitor created! (Task #{task.id})\n\n{summary(ud)}{extra}\n\n"
+            f"{'⚡ Will auto-snipe and send payment link when slot opens.' if tier == 'snipe' else '🔔 You will be notified when tickets are available.'}",
             reply_markup=kb_back()
         )
     except Exception as e:
@@ -792,11 +1012,15 @@ async def do_list(query, context):
     if not tasks:
         await query.edit_message_text("📋 No active monitors.", reply_markup=kb_back())
         return
-    lines = [f"📋 Active Monitors ({len(tasks)})\n"]
+    tier_icons = {'notify': '🔔', 'snipe': '⚡'}
+    lines = [f"📋 *Active Monitors ({len(tasks)})*\n"]
     for t in tasks:
-        emoji = "✅" if t.last_status == 'available' else "❌"
-        lines.append(f"{emoji} #{t.id} · {t.dates[0] if t.dates else '?'} · {t.visitors}v · {t.last_status or '?'}")
-    await query.edit_message_text('\n'.join(lines), reply_markup=kb_back())
+        status_icon = "🟢" if t.last_status == 'available' else "🔴" if t.last_status == 'sold_out' else "⏳"
+        icon = tier_icons.get(t.tier, '🔔')
+        times = t.preferred_times
+        time_str = times[0] if len(times) == 1 else 'Any'
+        lines.append(f"{status_icon} #{t.id} · {t.dates[0] if t.dates else '?'} · {t.visitors}v · {time_str} · {icon} {t.tier}")
+    await query.edit_message_text('\n'.join(lines), parse_mode='Markdown', reply_markup=kb_back())
 
 
 async def do_remove_menu(query, context):
@@ -842,6 +1066,124 @@ async def do_status(query, context):
     )
 
 
+async def do_pay_hold(query, context, hold_id):
+    """Generate a payment link for a hold, using uploaded participant names."""
+    from asgiref.sync import sync_to_async
+    import aiohttp
+
+    @sync_to_async
+    def get_hold_and_link():
+        from monitors.models import HeldSlot, BuyerProfile
+        import secrets, json
+        from django.core.cache import cache
+
+        try:
+            held = HeldSlot.objects.select_related('task__agency').get(id=hold_id)
+        except HeldSlot.DoesNotExist:
+            return None, "Hold not found"
+
+        if held.status not in ('held', 'paying'):
+            return None, f"Hold is {held.status}"
+
+        if held.hold_duration_hours() >= 24:
+            return None, "Hold expired (24h limit)"
+
+        # Get participant names from BuyerProfile
+        participants = []
+        try:
+            profile = BuyerProfile.objects.get(agency=held.task.agency)
+            if profile.participants_json:
+                participants = json.loads(profile.participants_json)
+        except Exception:
+            pass
+
+        # Generate token
+        token = secrets.token_urlsafe(32)
+        cache.set(f"epay_token:{hold_id}:{token}", {
+            'hold_id': hold_id,
+            'participants': participants,
+            'representative': {},
+        }, timeout=1800)
+
+        # Build URL — use the server's base URL
+        import os
+        base = os.getenv('SERVER_BASE_URL', 'https://hydrabot.it')
+        payment_url = f"{base}/pay/{hold_id}/{token}/"
+
+        remaining = max(0, 24 - held.hold_duration_hours())
+        return {
+            'url': payment_url,
+            'date': held.date,
+            'time': held.slot_time,
+            'visitors': held.visitors,
+            'total': held.total_price,
+            'remaining': remaining,
+            'participants': participants,
+        }, None
+
+    result, error = await get_hold_and_link()
+
+    if error:
+        await query.edit_message_text(f"❌ {error}", reply_markup=kb_back())
+        return
+
+    participant_preview = ""
+    if result['participants']:
+        names = [f"{p.get('first_name','')} {p.get('last_name','')}".strip()
+                 for p in result['participants'][:result['visitors']]]
+        participant_preview = "\n👤 Participants:\n" + '\n'.join(f"  {i+1}. {n}" for i, n in enumerate(names))
+    else:
+        participant_preview = "\n⚠️ No participant names uploaded — using profile defaults.\nUse /setparticipants to upload names."
+
+    await query.edit_message_text(
+        f"💳 *Payment Link Ready*\n\n"
+        f"📅 {result['date']} {result['time']}\n"
+        f"👥 {result['visitors']} visitors | €{result['total']}\n"
+        f"⏱ {result['remaining']:.0f}h remaining\n"
+        f"{participant_preview}\n\n"
+        f"🔗 *Open this link to pay:*\n"
+        f"{result['url']}\n\n"
+        f"⚠️ Link valid for 30 minutes. Single-use.",
+        parse_mode='Markdown',
+        disable_web_page_preview=True,
+        reply_markup=kb_back()
+    )
+
+
+async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/pending — admin only: list all pending groups waiting for approval."""
+    from asgiref.sync import sync_to_async
+
+    admin_ids = [a.strip() for a in os.getenv('ADMIN_TELEGRAM_IDS', '').split(',') if a.strip()]
+    if str(update.effective_user.id) not in admin_ids:
+        await update.message.reply_text("⛔ Not authorized.")
+        return
+
+    @sync_to_async
+    def get_pending():
+        return list(TelegramGroup.objects.filter(status='pending').order_by('-created_at')[:20])
+
+    groups = await get_pending()
+    if not groups:
+        await update.message.reply_text("✅ No pending groups.")
+        return
+
+    for g in groups:
+        approve_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Approve", callback_data=f"admin_approve:{g.chat_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject:{g.chat_id}")
+        ]])
+        await update.message.reply_text(
+            f"🔔 *Pending Group*\n\n"
+            f"Group: *{g.chat_title or 'Unknown'}*\n"
+            f"ID: `{g.chat_id}`\n"
+            f"Added by: {g.added_by_first_name or 'N/A'} (@{g.added_by_username or 'N/A'})\n"
+            f"Created: {g.created_at.strftime('%Y-%m-%d %H:%M')}",
+            parse_mode='Markdown',
+            reply_markup=approve_kb
+        )
+
+
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['step'] = None
     await update.message.reply_text("❌ Cancelled. Use /start to go back.", reply_markup=kb_back())
@@ -870,7 +1212,7 @@ async def setprofile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def holds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/holds — list all active held slots with payment links."""
+    """/holds — list recent snipe results (paying/paid slots)."""
     from asgiref.sync import sync_to_async
     agency = await get_agency(update.effective_chat.id)
     if not agency:
@@ -878,61 +1220,89 @@ async def holds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     @sync_to_async
-    def get_holds():
+    def get_snipes():
         from monitors.models import HeldSlot
         return list(HeldSlot.objects.filter(
-            task__agency=agency, status='held'
-        ).order_by('date', 'slot_time', 'visitors')[:30])
+            status__in=['paying', 'paid']
+        ).order_by('-hold_started_at')[:20])
 
-    holds = await get_holds()
-    if not holds:
+    snipes = await get_snipes()
+    if not snipes:
         await update.message.reply_text(
-            "🔓 No active holds right now.\n\nHolds are created automatically when slots open.",
+            "⚡ No snipe results yet.\n\nSnipes appear here when a slot is auto-booked.",
             reply_markup=kb_back()
         )
         return
 
-    lines = [f"🔒 *Active Holds* ({len(holds)})\n"]
-    for h in holds:
-        lines.append(
-            f"📅 {h.date} {h.slot_time} | 👥 {h.visitors}v | €{h.total_price}\n"
-            f"💳 [Pay now]({h.payment_url})\n"
-        )
-    await update.message.reply_text(
-        '\n'.join(lines),
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
-        reply_markup=kb_back()
-    )
+    lines = [f"⚡ *Recent Snipes ({len(snipes)})*\n"]
+    for h in snipes:
+        import json as _j
+        try:
+            ref = _j.loads(h.notes or '{}').get('reference', '')
+        except Exception:
+            ref = ''
+        status_icon = "✅" if h.status == 'paid' else "💳"
+        lines.append(f"{status_icon} {h.date} {h.slot_time} · {h.visitors}v · €{h.total_price} · {ref or h.status}")
+
+    await update.message.reply_text('\n'.join(lines), parse_mode='Markdown', reply_markup=kb_back())
 
 
 async def setparticipants_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /setparticipants — upload a .txt or .csv with participant names.
-
-    Format (one per line):
-        FirstName LastName
-    or CSV:
-        FirstName,LastName
-
-    These are used as participantUser list for hold/snipe bookings.
-    The representativeUser (billing contact) stays as the stored BuyerProfile.
+    /setparticipants [task_id] — set participant names for a specific snipe task.
+    If no task_id given, shows list of snipe tasks to choose from.
+    Names are used as participantUser in the Vatican reservation.
     """
+    from asgiref.sync import sync_to_async
+
     agency = await get_agency(update.effective_chat.id)
     if not agency:
         await update.message.reply_text("⚠️ Chat not linked to an agency.")
         return
-    context.user_data['agency_id'] = agency.id
-    context.user_data['step'] = 'awaiting_participants_file'
-    await update.message.reply_text(
-        "📋 *Upload Participant List*\n\n"
-        "Send a `.txt` or `.csv` file with one name per line:\n\n"
-        "`FirstName LastName`\n"
-        "`FirstName,LastName`\n\n"
-        "These names will be used as the visitors on the Vatican booking form.\n"
-        "The billing contact (representativeUser) stays as your saved profile.",
-        parse_mode='Markdown'
-    )
+
+    args = context.args or []
+
+    @sync_to_async
+    def get_snipe_tasks():
+        from monitors.models import MonitorTask
+        return list(MonitorTask.objects.filter(agency=agency, tier='snipe', is_active=True)
+                    .values('id', 'area_name', 'visitors', 'pay_mode', 'participants_json'))
+
+    tasks = await get_snipe_tasks()
+    if not tasks:
+        await update.message.reply_text("⚠️ No active snipe tasks found. Set a task to tier='snipe' first.")
+        return
+
+    # If task_id provided, go straight to upload
+    if args and args[0].isdigit():
+        task_id = int(args[0])
+        task = next((t for t in tasks if t['id'] == task_id), None)
+        if not task:
+            await update.message.reply_text(f"❌ Snipe task #{task_id} not found.")
+            return
+        context.user_data['step'] = 'awaiting_participants_file'
+        context.user_data['agency_id'] = agency.id
+        context.user_data['participants_task_id'] = task_id
+        await update.message.reply_text(
+            f"📋 *Upload participants for Task #{task_id}* ({task['area_name']}, {task['visitors']} visitors)\n\n"
+            "Send a `.txt` or `.csv` file, one name per line:\n"
+            "`FirstName LastName`\n`FirstName,LastName`",
+            parse_mode='Markdown'
+        )
+        return
+
+    # Show task list
+    lines = ["📋 *Snipe Tasks — choose one:*\n"]
+    for t in tasks:
+        import json as _json
+        pcount = 0
+        if t.get('participants_json'):
+            try:
+                pcount = len(_json.loads(t['participants_json']))
+            except Exception:
+                pass
+        lines.append(f"• `/setparticipants {t['id']}` — Task #{t['id']} | {t['area_name']} | {t['visitors']}v | {pcount} names set")
+    await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,32 +1347,271 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid names found. Check the format and try again.")
         return
 
-    # Save to BuyerProfile.participants_json (we'll add this field via migration)
+    # Save to MonitorTask.participants_json (task-specific) or BuyerProfile (fallback)
     @sync_to_async
     def save_participants():
-        from monitors.models import BuyerProfile, Agency
+        from monitors.models import BuyerProfile, Agency, MonitorTask
         import json
         agency = Agency.objects.get(id=agency_id)
-        profile, _ = BuyerProfile.objects.get_or_create(
-            agency=agency,
-            defaults={'first_name': 'Agency', 'last_name': 'User', 'email': f'agency{agency_id}@hydrabot.it', 'phone': '+000'}
-        )
-        profile.participants_json = json.dumps(participants)
-        profile.save(update_fields=['participants_json'])
-        return len(participants)
+        task_id = ud.get('participants_task_id')
+        if task_id:
+            # Save to specific task
+            MonitorTask.objects.filter(id=task_id, agency=agency).update(
+                participants_json=json.dumps(participants)
+            )
+            return len(participants), f"Task #{task_id}"
+        else:
+            # Fallback: save to BuyerProfile (agency-wide)
+            profile, _ = BuyerProfile.objects.get_or_create(
+                agency=agency,
+                defaults={'first_name': 'Agency', 'last_name': 'User', 'email': f'agency{agency_id}@hydrabot.it', 'phone': '+000'}
+            )
+            profile.participants_json = json.dumps(participants)
+            profile.save(update_fields=['participants_json'])
+            return len(participants), "all tasks (profile)"
 
-    count = await save_participants()
+    count, target = await save_participants()
     ud['step'] = None
+    ud.pop('participants_task_id', None)
     preview = '\n'.join(f"  {i+1}. {p['first_name']} {p['last_name']}" for i, p in enumerate(participants[:5]))
     if count > 5:
         preview += f"\n  ... and {count - 5} more"
 
     await update.message.reply_text(
-        f"✅ *{count} participants saved!*\n\n{preview}\n\n"
-        f"These names will be used for the next hold/snipe booking.",
+        f"✅ *{count} participants saved for {target}!*\n\n{preview}\n\n"
+        f"These names will be used for the next snipe booking.",
         parse_mode='Markdown',
         reply_markup=kb_back()
     )
+
+
+# ── /bulkhold ─────────────────────────────────────────────────────────────────
+
+async def bulkhold_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /bulkhold — manage bulk slot locking.
+
+    Usage:
+      /bulkhold                          — show active configs + held slot count
+      /bulkhold start YYYY-MM-DD YYYY-MM-DD HH:MM HH:MM <visitors>
+                                         — start bulk hold for date range + time window
+      /bulkhold stop <id>                — pause a config
+      /bulkhold release <id>             — release all held slots for a config
+    """
+    from asgiref.sync import sync_to_async
+    from datetime import date as date_type
+
+    agency = await get_agency(update.effective_chat.id)
+    if not agency:
+        await update.message.reply_text("⚠️ Chat not linked to an agency.")
+        return
+
+    args = context.args or []
+
+    # ── Status (no args) ──────────────────────────────────────────────────────
+    if not args:
+        @sync_to_async
+        def get_status():
+            from monitors.models import BulkHoldConfig, HeldSlot
+            configs = list(BulkHoldConfig.objects.filter(agency=agency).order_by('-created_at')[:10])
+            held_count = HeldSlot.objects.filter(status__in=['held','paying']).count()
+            return configs, held_count
+
+        configs, held_count = await get_status()
+
+        if not configs:
+            await update.message.reply_text(
+                f"🔒 *Bulk Hold Manager*\n\n"
+                f"No configs yet. Start one:\n"
+                f"`/bulkhold start 2026-04-15 2026-05-15 08:30 14:30 2`\n\n"
+                f"_(date\\_from date\\_to time\\_from time\\_to visitors)_",
+                parse_mode='Markdown'
+            )
+            return
+
+        lines = [f"🔒 *Bulk Hold Manager* — {held_count} slots currently locked\n"]
+        for c in configs:
+            status = "▶️ active" if c.is_active else "⏸ paused"
+            lines.append(
+                f"#{c.id} {status} | {c.date_from}→{c.date_to} | "
+                f"{c.time_from}-{c.time_to} | {c.visitors}v | "
+                f"{c.total_locked} locked"
+            )
+        lines.append(f"\n`/bulkhold stop <id>` — pause\n`/bulkhold release <id>` — release all slots")
+        await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+        return
+
+    # ── Start ─────────────────────────────────────────────────────────────────
+    if args[0] == 'start':
+        if len(args) < 6:
+            await update.message.reply_text(
+                "Usage: `/bulkhold start YYYY-MM-DD YYYY-MM-DD HH:MM HH:MM <visitors>`\n"
+                "Example: `/bulkhold start 2026-04-15 2026-06-15 08:30 14:30 2`",
+                parse_mode='Markdown'
+            )
+            return
+        try:
+            date_from = datetime.strptime(args[1], '%Y-%m-%d').date()
+            date_to = datetime.strptime(args[2], '%Y-%m-%d').date()
+            time_from = args[3]  # HH:MM
+            time_to = args[4]    # HH:MM
+            visitors = int(args[5])
+        except (ValueError, IndexError) as e:
+            await update.message.reply_text(f"❌ Invalid format: {e}")
+            return
+
+        if date_from > date_to:
+            await update.message.reply_text("❌ date_from must be before date_to")
+            return
+
+        days = (date_to - date_from).days + 1
+
+        @sync_to_async
+        def create_config():
+            from monitors.models import BulkHoldConfig
+            return BulkHoldConfig.objects.create(
+                agency=agency,
+                date_from=date_from, date_to=date_to,
+                time_from=time_from, time_to=time_to,
+                visitors=visitors, is_active=True,
+            )
+
+        cfg = await create_config()
+
+        # Trigger immediate scan
+        try:
+            from monitors.tasks_bulk_hold import bulk_hold_scan
+            await sync_to_async(bulk_hold_scan.apply_async)(queue='vatican', countdown=2)
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            f"✅ *Bulk Hold #{cfg.id} started!*\n\n"
+            f"📅 {date_from} → {date_to} ({days} days)\n"
+            f"⏰ {time_from} – {time_to}\n"
+            f"👥 {visitors} visitors per slot\n\n"
+            f"Scanning now... check `/bulkhold` in a minute for results.",
+            parse_mode='Markdown'
+        )
+        return
+
+    # ── Stop ──────────────────────────────────────────────────────────────────
+    if args[0] == 'stop' and len(args) >= 2:
+        cfg_id = int(args[1])
+
+        @sync_to_async
+        def pause_config():
+            from monitors.models import BulkHoldConfig
+            updated = BulkHoldConfig.objects.filter(id=cfg_id, agency=agency).update(is_active=False)
+            return updated > 0
+
+        ok = await pause_config()
+        if ok:
+            await update.message.reply_text(f"⏸ Bulk Hold #{cfg_id} paused. Held slots remain locked until keepalive stops.")
+        else:
+            await update.message.reply_text(f"❌ Config #{cfg_id} not found.")
+        return
+
+    # ── Release ───────────────────────────────────────────────────────────────
+    if args[0] == 'release' and len(args) >= 2:
+        cfg_id = int(args[1])
+
+        @sync_to_async
+        def release_slots():
+            from monitors.models import BulkHoldConfig, HeldSlot
+            import json
+            cfg = BulkHoldConfig.objects.filter(id=cfg_id, agency=agency).first()
+            if not cfg:
+                return 0, False
+            cfg.is_active = False
+            cfg.save(update_fields=['is_active'])
+            # Mark all held slots from this config as released
+            count = 0
+            for h in HeldSlot.objects.filter(status__in=['held','paying']):
+                try:
+                    notes = json.loads(h.notes or '{}')
+                    if notes.get('bulk_hold_config') == cfg_id:
+                        h.status = 'released'
+                        h.released_at = timezone.now()
+                        h.save(update_fields=['status', 'released_at'])
+                        count += 1
+                except Exception:
+                    pass
+            return count, True
+
+        count, found = await release_slots()
+        if found:
+            await update.message.reply_text(
+                f"🔓 Bulk Hold #{cfg_id} stopped.\n{count} slots released."
+            )
+        else:
+            await update.message.reply_text(f"❌ Config #{cfg_id} not found.")
+        return
+
+    await update.message.reply_text(
+        "Unknown command. Use `/bulkhold` to see options.", parse_mode='Markdown'
+    )
+
+
+# ── /setpaymode ───────────────────────────────────────────────────────────────
+
+async def setpaymode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /setpaymode <task_id> <link|auto>
+    Set pay mode for a snipe task:
+      link — send payment URL to Telegram (user pays themselves, no card stored)
+      auto — auto-pay with stored card via Playwright
+    """
+    from asgiref.sync import sync_to_async
+
+    agency = await get_agency(update.effective_chat.id)
+    if not agency:
+        await update.message.reply_text("⚠️ Chat not linked to an agency.")
+        return
+
+    args = context.args or []
+
+    @sync_to_async
+    def get_snipe_tasks():
+        from monitors.models import MonitorTask
+        return list(MonitorTask.objects.filter(agency=agency, tier='snipe', is_active=True)
+                    .values('id', 'area_name', 'visitors', 'pay_mode'))
+
+    tasks = await get_snipe_tasks()
+    if not tasks:
+        await update.message.reply_text("⚠️ No active snipe tasks found.")
+        return
+
+    if len(args) < 2 or not args[0].isdigit() or args[1] not in ('link', 'auto'):
+        lines = ["⚙️ *Pay Mode Settings*\n\n"
+                 "`/setpaymode <task_id> link` — send payment link to Telegram\n"
+                 "`/setpaymode <task_id> auto` — auto-pay with stored card\n\n"
+                 "*Current tasks:*"]
+        for t in tasks:
+            mode_icon = "🔗" if t['pay_mode'] == 'link' else "💳"
+            lines.append(f"• Task #{t['id']} | {t['area_name']} | {t['visitors']}v | {mode_icon} {t['pay_mode']}")
+        await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+        return
+
+    task_id = int(args[0])
+    new_mode = args[1]
+
+    @sync_to_async
+    def update_pay_mode():
+        from monitors.models import MonitorTask
+        updated = MonitorTask.objects.filter(id=task_id, agency=agency, tier='snipe').update(pay_mode=new_mode)
+        return updated > 0
+
+    ok = await update_pay_mode()
+    if ok:
+        icon = "🔗" if new_mode == 'link' else "💳"
+        desc = "payment link sent to Telegram" if new_mode == 'link' else "auto-pay with stored card"
+        await update.message.reply_text(
+            f"✅ Task #{task_id} pay mode set to {icon} *{new_mode}*\n_{desc}_",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(f"❌ Task #{task_id} not found or not a snipe task.")
 
 
 # ── Group join/leave handler ──────────────────────────────────────────────────
@@ -1045,35 +1654,396 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                 'last_activity': timezone.now()
             }
         )
-        if created:
-            # Build approve/reject buttons for admin notification
-            approve_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Approve", callback_data=f"admin_approve:{chat.id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject:{chat.id}")
-            ]])
+
+        # Update title/username if group already existed
+        if not created:
+            group.chat_title = chat.title
+            group.chat_username = chat.username
+            group.status = 'pending'  # reset to pending on re-add
+            await sync_to_async(group.save)(update_fields=['chat_title', 'chat_username', 'status'])
+
+        # Always notify the group itself
+        try:
             await context.bot.send_message(
                 chat_id=chat.id,
-                text=f"👋 Vatican Monitor Bot added!\n\n🔒 Pending admin approval.\nGroup ID: `{chat.id}`",
+                text=f"👋 *Vatican Monitor Bot added!*\n\n🔒 Pending admin approval.\nGroup ID: `{chat.id}`",
                 parse_mode='Markdown'
             )
-            # Notify admins with inline approve/reject buttons
-            admin_ids = os.getenv('ADMIN_TELEGRAM_IDS', '').split(',')
-            for aid in admin_ids:
-                if aid.strip():
-                    try:
-                        await context.bot.send_message(
-                            chat_id=aid.strip(),
-                            text=f"🔔 *New group approval request*\nGroup: {chat.title}\nID: `{chat.id}`\nAdded by: {user.first_name} (@{user.username})\n\nApprove or reject below:",
-                            parse_mode='Markdown',
-                            reply_markup=approve_kb
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to notify admin {aid}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to message group {chat.id}: {e}")
+
+        # Always notify ALL admins with approve/reject buttons
+        approve_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Approve", callback_data=f"admin_approve:{chat.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject:{chat.id}")
+        ]])
+        admin_ids = [a.strip() for a in os.getenv('ADMIN_TELEGRAM_IDS', '').split(',') if a.strip()]
+        for aid in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=aid,
+                    text=(
+                        f"🔔 *New group approval request*\n\n"
+                        f"Group: *{chat.title}*\n"
+                        f"ID: `{chat.id}`\n"
+                        f"Type: {chat.type}\n"
+                        f"Added by: {user.first_name} (@{user.username or 'N/A'})\n\n"
+                        f"Approve or reject below:"
+                    ),
+                    parse_mode='Markdown',
+                    reply_markup=approve_kb
+                )
+                logger.info(f"✅ Admin {aid} notified about group {chat.id}")
+            except Exception as e:
+                logger.error(f"Failed to notify admin {aid}: {e}")
     elif was_member and not is_member:
         group = await sync_to_async(TelegramGroup.objects.filter(chat_id=str(chat.id)).first)()
         if group:
             group.status = 'suspended'
             await sync_to_async(group.save)()
+
+
+async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/book — interactive booking flow: select held date → slot → visitors → names → pay link."""
+    agency = await get_agency(update.effective_chat.id)
+    if not agency:
+        await update.message.reply_text("⚠️ Chat not linked to an agency.")
+        return
+    context.user_data['agency_id'] = agency.id
+    context.user_data.pop('booking', None)
+    context.user_data['step'] = None
+
+    from asgiref.sync import sync_to_async
+
+    @sync_to_async
+    def get_open_dates():
+        from monitors.models import HeldSlot
+        holds = HeldSlot.objects.filter(
+            status__in=['held', 'paying']
+        ).order_by('date', 'slot_time')
+        # Group by date, keep only dates with time remaining
+        dates = {}
+        for h in holds:
+            remaining = max(0, 24 - h.hold_duration_hours())
+            if remaining > 0 and h.date not in dates:
+                dates[h.date] = remaining
+        return dates
+
+    dates = await get_open_dates()
+    if not dates:
+        await update.message.reply_text(
+            "🔓 No active holds right now.\n\nHolds are created automatically when slots open.",
+            reply_markup=kb_back()
+        )
+        return
+
+    rows = []
+    for date, remaining in sorted(dates.items(), key=lambda x: x[0]):
+        try:
+            dt = datetime.strptime(date, '%d/%m/%Y')
+            day_name = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][dt.weekday()]
+        except Exception:
+            day_name = ''
+        rows.append([InlineKeyboardButton(
+            f"📅 {date} ({day_name}) — ⏱ {remaining:.0f}h left",
+            callback_data=f"book_date:{date}"
+        )])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="book_cancel")])
+
+    await update.message.reply_text(
+        f"🏛️ *Vatican Booking*\n\n"
+        f"Step 1/4 — Select a date:\n"
+        f"({len(dates)} dates with active holds)",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def do_book_start(query, context):
+    """Called from callback — same as book_cmd but via inline button."""
+    from asgiref.sync import sync_to_async
+
+    @sync_to_async
+    def get_open_dates():
+        from monitors.models import HeldSlot
+        holds = HeldSlot.objects.filter(status__in=['held', 'paying']).order_by('date')
+        dates = {}
+        for h in holds:
+            remaining = max(0, 24 - h.hold_duration_hours())
+            if remaining > 0 and h.date not in dates:
+                dates[h.date] = remaining
+        return dates
+
+    dates = await get_open_dates()
+    if not dates:
+        await query.edit_message_text("🔓 No active holds.", reply_markup=kb_back())
+        return
+
+    rows = []
+    for date, remaining in sorted(dates.items()):
+        try:
+            dt = datetime.strptime(date, '%d/%m/%Y')
+            day_name = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][dt.weekday()]
+        except Exception:
+            day_name = ''
+        rows.append([InlineKeyboardButton(
+            f"📅 {date} ({day_name}) — ⏱ {remaining:.0f}h left",
+            callback_data=f"book_date:{date}"
+        )])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="book_cancel")])
+
+    await query.edit_message_text(
+        f"🏛️ *Vatican Booking*\n\nStep 1/4 — Select a date:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def do_book_select_slot(query, context, date_str):
+    """Step 2 — show all available time slots for the selected date."""
+    from asgiref.sync import sync_to_async
+
+    @sync_to_async
+    def get_slots_for_date():
+        from monitors.models import HeldSlot
+        holds = HeldSlot.objects.filter(
+            date=date_str, status__in=['held', 'paying']
+        ).order_by('slot_time', 'visitors')
+        slots = {}
+        for h in holds:
+            remaining = max(0, 24 - h.hold_duration_hours())
+            if remaining > 0:
+                if h.slot_time not in slots:
+                    slots[h.slot_time] = []
+                slots[h.slot_time].append(h.visitors)
+        return slots
+
+    slots = await get_slots_for_date()
+    if not slots:
+        await query.edit_message_text(f"❌ No slots for {date_str}.", reply_markup=kb_back())
+        return
+
+    rows = []
+    for slot_time, visitor_counts in sorted(slots.items()):
+        max_v = max(visitor_counts)
+        rows.append([InlineKeyboardButton(
+            f"⏰ {slot_time} — up to {max_v} {'person' if max_v == 1 else 'people'}",
+            callback_data=f"book_slot_time:{date_str}:{slot_time}"
+        )])
+    rows.append([InlineKeyboardButton("◀️ Back", callback_data="book")])
+
+    await query.edit_message_text(
+        f"🏛️ *Vatican Booking*\n\n"
+        f"📅 Date: {date_str}\n\n"
+        f"Step 2/4 — Select a time slot:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def do_book_show_visitor_options(query, context, date_str, slot_time):
+    """Step 3 — show visitor count options for the selected date+time."""
+    from asgiref.sync import sync_to_async
+
+    @sync_to_async
+    def get_holds_for_slot():
+        from monitors.models import HeldSlot
+        return list(HeldSlot.objects.filter(
+            date=date_str, slot_time=slot_time,
+            status__in=['held', 'paying']
+        ).order_by('visitors'))
+
+    siblings = await get_holds_for_slot()
+    if not siblings:
+        await query.edit_message_text("❌ No holds for this slot.", reply_markup=kb_back())
+        return
+
+    rows = []
+    for s in siblings:
+        remaining = max(0, 24 - s.hold_duration_hours())
+        if remaining <= 0:
+            continue
+        rows.append([InlineKeyboardButton(
+            f"👥 {s.visitors} {'person' if s.visitors == 1 else 'people'} — €{s.total_price} (⏱ {remaining:.0f}h left)",
+            callback_data=f"book_vis:{s.id}:{s.visitors}"
+        )])
+    rows.append([InlineKeyboardButton("◀️ Back", callback_data=f"book_date:{date_str}")])
+
+    await query.edit_message_text(
+        f"🏛️ *Vatican Booking*\n\n"
+        f"📅 {date_str} {slot_time}\n\n"
+        f"Step 3/4 — How many people?",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def do_book_select_visitors(query, context, hold_id):
+    """Kept for backward compat — redirects to show_visitor_options."""
+    from asgiref.sync import sync_to_async
+
+    @sync_to_async
+    def get_hold(hid):
+        from monitors.models import HeldSlot
+        return HeldSlot.objects.filter(id=hid).first()
+
+    held = await get_hold(hold_id)
+    if not held:
+        await query.edit_message_text("❌ Hold not found.", reply_markup=kb_back())
+        return
+    await do_book_show_visitor_options(query, context, held.date, held.slot_time)
+
+
+async def do_book_ask_names(query, context, hold_id, visitors):
+    """Step 4 — ask for participant names one by one."""
+    from asgiref.sync import sync_to_async
+
+    @sync_to_async
+    def get_hold(hid):
+        from monitors.models import HeldSlot
+        return HeldSlot.objects.filter(id=hid).first()
+
+    held = await get_hold(hold_id)
+    if not held:
+        await query.edit_message_text("❌ Hold not found.", reply_markup=kb_back())
+        return
+
+    # Store booking state
+    context.user_data['booking'] = {
+        'hold_id': hold_id,
+        'visitors': visitors,
+        'date': held.date,
+        'slot_time': held.slot_time,
+        'total': held.total_price,
+        'names': [],
+    }
+    context.user_data['step'] = 'book_name'
+
+    await query.edit_message_text(
+        f"🏛️ *Vatican Booking*\n\n"
+        f"📅 {held.date} {held.slot_time}\n"
+        f"👥 {visitors} {'person' if visitors == 1 else 'people'} | €{held.total_price}\n\n"
+        f"Step 4/4 — Enter participant names\n\n"
+        f"Send *Participant 1/{visitors}* name:\n"
+        f"Format: `FirstName LastName`\n\n"
+        f"Example: `John Doe`",
+        parse_mode='Markdown'
+    )
+
+
+async def do_book_generate_link(query, context, hold_id):
+    """Final step — inject names, generate payment link, send to user."""
+    from asgiref.sync import sync_to_async
+    import secrets
+
+    booking = context.user_data.get('booking', {})
+    names = booking.get('names', [])
+    visitors = booking.get('visitors', 1)
+
+    @sync_to_async
+    def build_link(hid, participant_names, num_visitors):
+        from monitors.models import HeldSlot, BuyerProfile
+        from django.core.cache import cache
+        import os
+
+        held = HeldSlot.objects.select_related('task__agency').filter(id=hid).first()
+        if not held:
+            return None, "Hold not found"
+        if held.hold_duration_hours() >= 24:
+            return None, "Hold expired (24h limit)"
+
+        # Get buyer profile for representative info
+        try:
+            profile = BuyerProfile.objects.get(agency=held.task.agency)
+        except BuyerProfile.DoesNotExist:
+            return None, "No buyer profile set. Run /setprofile first."
+
+        # Build participant list from entered names
+        participants = []
+        for i, n in enumerate(participant_names[:num_visitors]):
+            participants.append({
+                'first_name': n.get('first_name', profile.first_name),
+                'last_name': n.get('last_name', profile.last_name),
+            })
+        # Pad if needed
+        while len(participants) < num_visitors:
+            participants.append({
+                'first_name': profile.first_name,
+                'last_name': profile.last_name,
+            })
+
+        # Representative = profile data
+        representative = {
+            'first_name': profile.first_name,
+            'last_name': profile.last_name,
+            'email': profile.email,
+            'phone': profile.phone,
+            'country': profile.country,
+            'city': profile.city,
+            'birth_date': profile.birth_date.strftime('%Y-%m-%dT%H:%M:%S.000Z') if profile.birth_date else None,
+            'gender': profile.gender,
+            'language': profile.language or 'en',
+        }
+
+        # Generate single-use token (30 min expiry)
+        token = secrets.token_urlsafe(32)
+        cache.set(f"epay_token:{hid}:{token}", {
+            'hold_id': hid,
+            'participants': participants,
+            'representative': representative,
+        }, timeout=1800)
+
+        base = os.getenv('SERVER_BASE_URL', 'https://hydrabot.it')
+        payment_url = f"{base}/pay/{hid}/{token}/"
+
+        return {
+            'url': payment_url,
+            'date': held.date,
+            'time': held.slot_time,
+            'visitors': num_visitors,
+            'total': held.total_price,
+            'remaining': max(0, 24 - held.hold_duration_hours()),
+            'participants': participants,
+            'rep_name': f"{profile.first_name} {profile.last_name}",
+            'rep_email': profile.email,
+        }, None
+
+    result, error = await build_link(hold_id, names, visitors)
+
+    # Clear booking state
+    context.user_data.pop('booking', None)
+    context.user_data['step'] = None
+
+    if error:
+        await query.edit_message_text(f"❌ {error}", reply_markup=kb_back())
+        return
+
+    # Format participant preview
+    p_lines = '\n'.join(
+        f"  {i+1}. {p['first_name']} {p['last_name']}"
+        for i, p in enumerate(result['participants'])
+    )
+
+    await query.edit_message_text(
+        f"✅ *Payment Link Ready!*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 {result['date']} {result['time']}\n"
+        f"👥 {result['visitors']} visitors | €{result['total']}\n"
+        f"⏱ {result['remaining']:.0f}h remaining\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 *Participants:*\n{p_lines}\n\n"
+        f"🧾 *Billing:* {result['rep_name']} ({result['rep_email']})\n\n"
+        f"💳 *Open this link to pay:*\n"
+        f"{result['url']}\n\n"
+        f"⚠️ Single-use · Valid 30 minutes\n"
+        f"Opens Vatican payment page in any browser",
+        parse_mode='Markdown',
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Book Another", callback_data="book")],
+            [InlineKeyboardButton("🔙 Main Menu", callback_data="menu")],
+        ])
+    )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1089,7 +2059,11 @@ def main():
     app.add_handler(CommandHandler('cancel', cancel_cmd))
     app.add_handler(CommandHandler('setprofile', setprofile_cmd))
     app.add_handler(CommandHandler('setparticipants', setparticipants_cmd))
+    app.add_handler(CommandHandler('setpaymode', setpaymode_cmd))
+    app.add_handler(CommandHandler('bulkhold', bulkhold_cmd))
     app.add_handler(CommandHandler('holds', holds_cmd))
+    app.add_handler(CommandHandler('book', book_cmd))
+    app.add_handler(CommandHandler('pending', pending_cmd))
 
     # Text input (for manual date entry, profile steps)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

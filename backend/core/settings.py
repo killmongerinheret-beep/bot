@@ -28,7 +28,7 @@ SECRET_KEY = 'django-insecure-5($a4s_g0pp^f!f$i-$@v5ntr1%fsy#30=u7ueh^b^b8ne4)ip
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['hydrasnipe.it', '91.99.1.194', 'localhost', '127.0.0.1', 'backend', '*']
+ALLOWED_HOSTS = ['hydrasnipe.it', 'hydrabot.it', 'www.hydrabot.it', '91.99.1.194', '151.25.69.162', 'localhost', '127.0.0.1', 'backend', '*']
 
 # CSRF Trusted Origins (required for Django admin over HTTPS)
 # Includes Cloudflare Tunnel and Vercel domains
@@ -193,6 +193,11 @@ CELERY_TASK_TIME_LIMIT = 30 * 60
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 CELERY_BEAT_SCHEDULE = {
+    'instant-sniper-scan': {
+        'task': 'instant_sniper_scan',
+        'schedule': 15.0,  # Every 15 seconds - highest priority
+        'options': {'queue': 'vatican', 'priority': 0},
+    },
     'keepalive-held-slots': {
         'task': 'keepalive_held_slots',
         'schedule': 300,  # every 5 minutes
@@ -203,6 +208,18 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 30,  # every 30 seconds
         'options': {'queue': 'vatican'},
     },
+    'bulk-hold-scan': {
+        'task': 'bulk_hold_scan',
+        'schedule': 300,  # every 5 minutes
+        'options': {'queue': 'vatican'},
+    },
+    'bulk-hold-keepalive': {
+        'task': 'bulk_hold_keepalive',
+        'schedule': 1500,  # every 25 minutes
+        'options': {'queue': 'vatican'},
+    },
+    # maintain-turnstile-pool REMOVED — was burning 1,599+ tokens/day
+    # Tokens are now solved on-demand only when a snipe fires
 }
 
 # Cache Configuration (Redis)

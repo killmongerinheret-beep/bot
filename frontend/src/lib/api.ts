@@ -20,19 +20,16 @@ export interface MonitorTask {
     preferred_times: string[];
     visitors: number;
     ticket_type: number;
-
-    // ✅ NEW: Vatican ticket selection
     ticket_id?: string;
     ticket_name?: string;
-
     language: string;
+    tier?: 'notify' | 'hold' | 'snipe';
     is_active: boolean;
     last_checked: string | null;
     check_interval: number;
     last_status?: string;
-    last_result_summary?: string; // JSON String
+    last_result_summary?: string;
     created_at: string;
-    // ✅ NEW: Latest check result with slots
     latest_check?: CheckResult | null;
 }
 

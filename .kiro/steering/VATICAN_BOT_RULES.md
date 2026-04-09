@@ -209,6 +209,8 @@ api_url = "...lang=it&visitTypeId=2129030053&visitorNum=2..."
 ```
 
 ### ✅ CORRECT: Always Include visitLang
+
+
 ```python
 # GOOD - Standard ticket with empty visitLang
 api_url = "...lang=it&visitLang=&visitTypeId=2129030053&visitorNum=2..."

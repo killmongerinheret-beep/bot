@@ -25,6 +25,11 @@ export default function TaskCard({ task, onDelete }: TaskCardProps) {
     const style = STATUS_STYLES[status] || defaultStyle;
     const isAvailable = status === 'available';
 
+    const TIER_BADGE: Record<string, string> = {
+        hold:  '🔒 Hold',
+        snipe: '🤖 Snipe',
+    };
+
     useEffect(() => {
         const tick = () => {
             if (!task.last_checked) { setTimeLeft('Pending'); return; }
@@ -83,6 +88,11 @@ export default function TaskCard({ task, onDelete }: TaskCardProps) {
                         {task.language && (
                             <span className="text-xs text-[#00E37C] bg-[#00E37C]/10 border border-[#00E37C]/20 px-2 py-1 rounded-lg">
                                 {langFlag[task.language] || ''} {task.language}
+                            </span>
+                        )}
+                        {task.tier && TIER_BADGE[task.tier] && (
+                            <span className="text-xs text-purple-400 bg-purple-500/10 border border-purple-500/20 px-2 py-1 rounded-lg">
+                                {TIER_BADGE[task.tier]}
                             </span>
                         )}
                     </div>

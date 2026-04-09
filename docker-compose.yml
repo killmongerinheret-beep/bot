@@ -88,6 +88,7 @@ services:
       - ADMIN_TELEGRAM_IDS=${ADMIN_TELEGRAM_IDS}
       - PYTHONPATH=/app/backend:/app
       - DJANGO_SETTINGS_MODULE=core.settings
+      - SERVER_BASE_URL=https://hydrabot.it
     depends_on:
       - db
       - redis
@@ -128,20 +129,7 @@ services:
     depends_on:
       - redis
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: always
-    network_mode: host
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
 
-  ngrok:
-    image: ngrok/ngrok:latest
-    restart: always
-    command: http backend:8000 --authtoken ${NGROK_AUTHTOKEN} --url=${NGROK_DOMAIN}
-    ports:
-      - "4040:4040"
-    depends_on:
-      - backend
 
   harvester:
     build: ./harvester

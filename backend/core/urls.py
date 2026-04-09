@@ -16,8 +16,14 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from monitors.views_epay import epay_redirect, epay_direct, generate_payment_link
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/', include('monitors.urls')),
+    # Direct epay form — uses cached reservation params, no second token needed
+    path('pay/direct/<int:hold_id>/<str:token>/', epay_direct, name='epay_direct'),
+    # Full fresh-reservation epay — for /book flow with participant names
+    path('pay/<int:hold_id>/<str:token>/', epay_redirect, name='epay_redirect'),
+    path('api/v1/generate-payment-link/', generate_payment_link, name='generate_payment_link'),
 ]

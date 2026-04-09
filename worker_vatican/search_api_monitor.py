@@ -267,7 +267,7 @@ class VaticanSearchAPIMonitor:
         target_date: str,
         visitors: int,
         language: Optional[str] = None
-    ) -> Tuple[bool, List[str]]:
+    ) -> Tuple[bool, List[dict]]:
         """
         Check ticket availability using timeavail API.
         
@@ -278,7 +278,7 @@ class VaticanSearchAPIMonitor:
             language: Language code (empty for standard tickets)
         
         Returns:
-            Tuple of (success: bool, available_slots: List[str])
+            Tuple of (success: bool, available_slots: List[dict])
         """
         # Normalize date to DD/MM/YYYY format
         normalized_date = self.normalize_date_format(target_date)
@@ -313,14 +313,21 @@ class VaticanSearchAPIMonitor:
                 
                 if 'timetable' in data:
                     timetable = data['timetable']
-                    available_slots = [
-                        slot['time'] for slot in timetable 
-                        if slot.get('availability') != 'SOLD_OUT'
-                    ]
+                    available_slots = []
+                    for slot in timetable:
+                        if slot.get('availability') == 'SOLD_OUT':
+                            continue
+                        slot_id = slot.get('id') or slot.get('visitId') or slot.get('visit_id')
+                        slot_time = slot.get('time') or slot.get('slotTime')
+                        available_slots.append({
+                            'id': slot_id,
+                            'time': slot_time,
+                            'availability': slot.get('availability'),
+                        })
                     
                     logger.info(f"✅ Timeavail: {len(available_slots)}/{len(timetable)} slots available")
                     if available_slots:
-                        logger.info(f"   First 3: {', '.join(available_slots[:3])}")
+                        logger.info(f"   First 3: {', '.join([s.get('time') or '' for s in available_slots[:3]])}")
                     
                     return True, available_slots
                 else:

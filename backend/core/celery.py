@@ -27,6 +27,15 @@ app.autodiscover_tasks(['monitors'], related_name='tasks_hold')
 # Sweep tasks (mass hold)
 app.autodiscover_tasks(['monitors'], related_name='tasks_sweep')
 
+# Bulk hold manager
+app.autodiscover_tasks(['monitors'], related_name='tasks_bulk_hold')
+
+# Turnstile token pool
+app.autodiscover_tasks(['monitors'], related_name='turnstile_pool')
+
+# Lightning snipe engine
+app.autodiscover_tasks(['monitors'], related_name='lightning_snipe')
+
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     print(f'Request: {self.request!r}')

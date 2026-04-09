@@ -1312,10 +1312,42 @@ def resolve_and_check_task(task_id):
         return f"Failed: {str(e)}"
 
 
+def _get_task_priority(task):
+    """
+    Calculate priority for a task based on day of week.
+    High priority days (Fri, Sat, Mon, Thu) get shorter intervals.
+    
+    Returns: priority_multiplier (0.5 for high priority, 1.0 for normal)
+    """
+    if not task.dates:
+        return 1.0
+    
+    try:
+        # Check first date in task
+        date_str = task.dates[0]
+        date = normalize_date(date_str)
+        if not date:
+            return 1.0
+        
+        # Parse DD/MM/YYYY
+        day, month, year = date.split('/')
+        dt = datetime(int(year), int(month), int(day))
+        weekday = dt.weekday()  # 0=Monday, 6=Sunday
+        
+        # High priority: Friday(4), Saturday(5), Monday(0), Thursday(3)
+        if weekday in [0, 3, 4, 5]:
+            return 0.5  # Check 2x more frequently
+        else:
+            return 1.0  # Normal frequency
+    except Exception:
+        return 1.0
+
+
 @shared_task(name="orchestrate_all_tasks")
 def orchestrate_all_tasks():
     """
     ✅ ULTRA-OPTIMIZED: Groups tasks by (date, ticket_id, language, visitors) for maximum efficiency.
+    ✅ PRIORITY-BASED: High-demand days (Fri, Sat, Mon, Thu) checked 2x more frequently.
     
     Example: If 5 agencies want the same ticket/date/language, we check ONCE and notify all 5.
     """
@@ -1334,13 +1366,17 @@ def orchestrate_all_tasks():
         interval_seconds = getattr(task, 'check_interval', 120)
         if not interval_seconds or interval_seconds < 60:
             interval_seconds = 60  # Force min 60s
-            
+        
+        # ✅ PRIORITY ADJUSTMENT: High-demand days get 2x frequency
+        priority_multiplier = _get_task_priority(task)
+        adjusted_interval = int(interval_seconds * priority_multiplier)
+        
         should_run = False
         if not task.last_checked:
             should_run = True
         else:
             elapsed = (now - task.last_checked).total_seconds()
-            if elapsed >= interval_seconds:
+            if elapsed >= adjusted_interval:
                 should_run = True
                 
         if should_run:
@@ -1363,7 +1399,8 @@ def orchestrate_all_tasks():
                             smart_groups[key] = {
                                 'task_ids': [],
                                 'ticket_name': task.ticket_name or 'Unknown Ticket',
-                                'visitors': task.visitors
+                                'visitors': task.visitors,
+                                'priority': priority_multiplier
                             }
                         
                         smart_groups[key]['task_ids'].append(task.id)
@@ -1397,14 +1434,23 @@ def orchestrate_all_tasks():
             )
             logger.info(f"   Task #{task.id} ({task.dates[0] if task.dates else 'N/A'}) - queued for ID resolution")
                 
-    # ✅ DISPATCH SMART TASKS (New optimized method)
+    # ✅ DISPATCH SMART TASKS (New optimized method with priority)
     smart_count = 0
+    high_priority_count = 0
+    
     for (date, ticket_id, language, visitors), data in smart_groups.items():
         task_ids = data['task_ids']
         ticket_name = data['ticket_name']
+        priority = data.get('priority', 1.0)
         
-        # Jitter for anti-ban
-        jitter = random.randint(5, 30)
+        if priority < 1.0:
+            high_priority_count += 1
+        
+        # Jitter for anti-ban (shorter for high priority)
+        if priority < 1.0:
+            jitter = random.randint(2, 15)  # Faster dispatch for high priority
+        else:
+            jitter = random.randint(5, 30)
         
         # ✅ Dispatch based on configured mode
         if VATICAN_MONITOR_MODE == 'headless':
@@ -1429,12 +1475,16 @@ def orchestrate_all_tasks():
             )
         
         smart_count += 1
-        logger.info(f"📊 Smart Group: {date}/{ticket_id}/{language}/{visitors}v → {len(task_ids)} agencies")
+        priority_label = "⚡HIGH" if priority < 1.0 else "NORMAL"
+        logger.info(f"📊 [{priority_label}] Smart Group: {date}/{ticket_id}/{language}/{visitors}v → {len(task_ids)} agencies")
 
     total_checks = smart_count + len(tasks_needing_id)
-    logger.info(f"✅ Orchestration Complete: {smart_count} smart checks + {len(tasks_needing_id)} ID resolutions (REQUIRED)")
+    logger.info(
+        f"✅ Orchestration Complete: {smart_count} smart checks "
+        f"({high_priority_count} high priority) + {len(tasks_needing_id)} ID resolutions"
+    )
     
-    return f"Queued {smart_count} smart checks (multi-agency), {len(tasks_needing_id)} ID resolutions (REQUIRED)."
+    return f"Queued {smart_count} smart checks ({high_priority_count} high priority), {len(tasks_needing_id)} ID resolutions."
 @shared_task(name="cleanup_old_results")
 def cleanup_old_results():
     """
