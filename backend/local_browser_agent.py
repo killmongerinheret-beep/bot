@@ -57,7 +57,9 @@ PROFILE = {
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
-processed_slots = set()  # track which slots we've already opened
+CHROME_PATH = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
+# Your real Chrome user profile — Cloudflare trusts this (real cookies, history, extensions)
+CHROME_PROFILE = os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Google\Chrome\User Data')
 last_update_id = 0      # Telegram update offset
 
 
@@ -182,6 +184,26 @@ async def open_checkout(slot: dict):
     logger.info(f"Opening Chrome... (auto-closes in 20 min)")
     logger.info(f"{'='*60}")
 
+    # Fetch profile from server, fall back to hardcoded PROFILE
+    profile_data = PROFILE.copy()
+    try:
+        r = requests.get(f'{SERVER_URL}/api/v1/buyer-profile/', timeout=5)
+        if r.status_code == 200:
+            srv = r.json()
+            if srv.get('first_name'):
+                profile_data.update({
+                    'first_name': srv.get('first_name', profile_data['first_name']),
+                    'last_name': srv.get('last_name', profile_data['last_name']),
+                    'email': srv.get('email', profile_data['email']),
+                    'phone': srv.get('phone', profile_data['phone']),
+                    'city': srv.get('city', profile_data['city']),
+                    'country': srv.get('country', profile_data['country']),
+                })
+                logger.info(f"  Profile from server: {profile_data['first_name']} {profile_data['last_name']}")
+    except Exception:
+        pass
+    logger.info(f"  Using profile: {profile_data['first_name']} {profile_data['last_name']}")
+
     send_telegram(
         TRIGGER_GROUP_CHAT_ID,
         f"🌐 *Browser opening for slot:*\n"
@@ -206,25 +228,27 @@ async def open_checkout(slot: dict):
     start_time = time.time()
 
     async with async_playwright() as p:
-        # Open REAL Chrome — visible on your screen
+        # Use REAL Chrome with your actual user profile
+        # Cloudflare cannot detect this as a bot — it's your real browser
         browser = await p.chromium.launch(
+            executable_path=CHROME_PATH,
             headless=False,
-            slow_mo=200,
+            slow_mo=150,
             args=[
-                '--no-sandbox',
+                '--no-first-run',
+                '--no-default-browser-check',
                 '--disable-blink-features=AutomationControlled',
-                '--start-maximized',
+                f'--user-data-dir={CHROME_PROFILE}',
+                '--profile-directory=Default',
             ]
         )
         ctx = await browser.new_context(
             locale='it-IT',
             timezone_id='Europe/Rome',
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
             no_viewport=True,
         )
         await ctx.add_init_script(
             "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-            "window.chrome={runtime:{}};"
         )
         page = await ctx.new_page()
 
@@ -382,12 +406,12 @@ async def open_checkout(slot: dict):
             except Exception:
                 pass
 
-        await fill("[data-cy='managerSurname']", PROFILE['last_name'])
-        await fill("[data-cy='managerName']", PROFILE['first_name'])
-        await fill("[data-cy='managerCity']", PROFILE['city'])
-        await fill("[data-cy='managerEmail']", PROFILE['email'])
-        await fill("[data-cy='managerConfirmEmail']", PROFILE['email'])
-        await fill("[data-cy='managerPhone']", PROFILE['phone'])
+        await fill("[data-cy='managerSurname']", profile_data['last_name'])
+        await fill("[data-cy='managerName']", profile_data['first_name'])
+        await fill("[data-cy='managerCity']", profile_data['city'])
+        await fill("[data-cy='managerEmail']", profile_data['email'])
+        await fill("[data-cy='managerConfirmEmail']", profile_data['email'])
+        await fill("[data-cy='managerPhone']", profile_data['phone'])
 
         # Gender
         try:
@@ -405,7 +429,7 @@ async def open_checkout(slot: dict):
 
         # Birth date
         try:
-            bd = PROFILE['birth_date']
+            bd = profile_data['birth_date']
             toggle = await page.query_selector("[data-cy='managerBirthDate'] button, [data-cy='dateCalendar']")
             if toggle:
                 await toggle.click(); await page.wait_for_timeout(800)
@@ -427,8 +451,8 @@ async def open_checkout(slot: dict):
 
         # Participants
         for i in range(visitors):
-            p_first = participants[i].get('first_name', PROFILE['first_name']) if i < len(participants) else PROFILE['first_name']
-            p_last = participants[i].get('last_name', PROFILE['last_name']) if i < len(participants) else PROFILE['last_name']
+            p_first = participants[i].get('first_name', profile_data['first_name']) if i < len(participants) else profile_data['first_name']
+            p_last = participants[i].get('last_name', profile_data['last_name']) if i < len(participants) else profile_data['last_name']
             await fill(f"#participantSurname_{i}", p_last)
             await fill(f"#participantName_{i}", p_first)
 

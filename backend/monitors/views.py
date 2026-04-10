@@ -939,6 +939,36 @@ def get_browser_pending(request):
     return Response({'requests': []})
 
 
+@api_view(['GET'])
+def get_buyer_profile(request):
+    """Return the first active buyer profile — used by local browser agent."""
+    from .models import BuyerProfile, Agency
+    try:
+        agency = Agency.objects.filter(is_active=True).exclude(plan='system').first()
+        if not agency:
+            return Response({})
+        profile = BuyerProfile.objects.filter(agency=agency).first()
+        if not profile:
+            return Response({})
+        bd = None
+        if profile.birth_date:
+            month_abbr = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][profile.birth_date.month-1]
+            bd = {'year': profile.birth_date.year, 'month': month_abbr, 'day': profile.birth_date.day}
+        return Response({
+            'first_name': profile.first_name,
+            'last_name': profile.last_name,
+            'email': profile.email,
+            'phone': profile.phone,
+            'city': profile.city,
+            'country': profile.country,
+            'gender': profile.gender,
+            'birth_date': bd,
+            'language': profile.language,
+        })
+    except Exception as e:
+        return Response({'error': str(e)})
+
+
 @api_view(['POST'])
 def release_held_slot(request, hold_id):
     """Release a held slot."""

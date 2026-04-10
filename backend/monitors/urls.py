@@ -7,7 +7,7 @@ from .views import (
     list_telegram_groups, approve_telegram_group, reject_telegram_group, suspend_telegram_group,
     register_user, login_user, logout_user, verify_session,
     list_held_slots, release_held_slot, checkout_redirect, generate_realtime_epay, generate_test_profiles,
-    mark_slot_paid, get_browser_trigger_group, get_browser_pending,
+    mark_slot_paid, get_browser_trigger_group, get_browser_pending, get_buyer_profile,
 )
 from .admin_views import (
     AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet
@@ -50,6 +50,7 @@ urlpatterns = [
     path('mark-paid/', mark_slot_paid, name='mark-slot-paid'),
     path('browser-trigger-group/', get_browser_trigger_group, name='browser-trigger-group'),
     path('browser-pending/', get_browser_pending, name='browser-pending'),
+    path('buyer-profile/', get_buyer_profile, name='buyer-profile'),
     path('epay/generate/', generate_realtime_epay, name='generate-realtime-epay'),
     path('test/profiles/', generate_test_profiles, name='generate-test-profiles'),
     path('', include(router.urls)),
