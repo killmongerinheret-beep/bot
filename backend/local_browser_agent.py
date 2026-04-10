@@ -58,8 +58,9 @@ PROFILE = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 CHROME_PATH = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
-# Your real Chrome user profile — Cloudflare trusts this (real cookies, history, extensions)
-CHROME_PROFILE = os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Google\Chrome\User Data')
+# Use a dedicated Chrome profile for the agent (separate from your main Chrome)
+# This avoids conflicts when Chrome is already running
+CHROME_PROFILE = os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Google\Chrome\VaticanAgent')
 last_update_id = 0      # Telegram update offset
 
 
@@ -228,29 +229,71 @@ async def open_checkout(slot: dict):
     start_time = time.time()
 
     async with async_playwright() as p:
-        # Use REAL Chrome with your actual user profile
-        # Cloudflare cannot detect this as a bot — it's your real browser
-        browser = await p.chromium.launch(
-            executable_path=CHROME_PATH,
-            headless=False,
-            slow_mo=150,
-            args=[
-                '--no-first-run',
-                '--no-default-browser-check',
-                '--disable-blink-features=AutomationControlled',
-                f'--user-data-dir={CHROME_PROFILE}',
-                '--profile-directory=Default',
-            ]
-        )
-        ctx = await browser.new_context(
-            locale='it-IT',
-            timezone_id='Europe/Rome',
-            no_viewport=True,
-        )
-        await ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-        )
-        page = await ctx.new_page()
+        # Launch REAL Chrome via CDP — Cloudflare cannot detect this
+        import subprocess, tempfile, shutil
+
+        # Create a temp profile copied from your real Chrome profile
+        # This gives Cloudflare real browser signals (cookies, history, etc.)
+        real_profile = os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Google\Chrome\User Data')
+        temp_profile = os.path.join(tempfile.gettempdir(), 'vatican_chrome_profile')
+
+        # Copy Default profile if temp doesn't exist yet
+        if not os.path.exists(temp_profile):
+            try:
+                src = os.path.join(real_profile, 'Default')
+                dst = os.path.join(temp_profile, 'Default')
+                if os.path.exists(src):
+                    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
+                        'Cache', 'Code Cache', 'GPUCache', 'ShaderCache',
+                        'Service Worker', 'CacheStorage', '*.log'
+                    ))
+                    logger.info(f"  Copied Chrome profile to temp")
+            except Exception as e:
+                logger.debug(f"  Profile copy: {e}")
+
+        # Launch Chrome with remote debugging on port 9222
+        debug_port = 9222
+        chrome_proc = subprocess.Popen([
+            CHROME_PATH,
+            f'--remote-debugging-port={debug_port}',
+            f'--user-data-dir={temp_profile}',
+            '--profile-directory=Default',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--start-maximized',
+            '--disable-blink-features=AutomationControlled',
+            'about:blank',
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Wait for Chrome to start
+        await asyncio.sleep(2)
+
+        # Connect Playwright to the running Chrome
+        try:
+            browser = await p.chromium.connect_over_cdp(f'http://localhost:{debug_port}')
+            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = await ctx.new_page()
+            logger.info(f"  Connected to real Chrome via CDP")
+        except Exception as e:
+            logger.error(f"  CDP connect failed: {e} — falling back to Playwright Chromium")
+            chrome_proc.terminate()
+            # Fallback to Playwright Chromium
+            browser = await p.chromium.launch(
+                headless=False,
+                args=['--no-sandbox', '--disable-blink-features=AutomationControlled',
+                      '--start-maximized']
+            )
+            ctx = await browser.new_context(
+                locale='it-IT', timezone_id='Europe/Rome',
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                viewport={'width': 1280, 'height': 900},
+            )
+            await ctx.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                "window.chrome={runtime:{},loadTimes:function(){},csi:function(){},app:{isInstalled:false}};"
+            )
+            page = await ctx.new_page()
+            chrome_proc = None
 
         # Capture reservation response
         async def on_response(response):
@@ -410,6 +453,11 @@ async def open_checkout(slot: dict):
         await fill("[data-cy='managerName']", profile_data['first_name'])
         await fill("[data-cy='managerCity']", profile_data['city'])
         await fill("[data-cy='managerEmail']", profile_data['email'])
+        # Confirm email — click div 7 first (from recording), then fill
+        try:
+            div7 = await page.query_selector("div.muvaManagerContainer div > div:nth-of-type(7)")
+            if div7: await div7.click(); await page.wait_for_timeout(200)
+        except Exception: pass
         await fill("[data-cy='managerConfirmEmail']", profile_data['email'])
         await fill("[data-cy='managerPhone']", profile_data['phone'])
 
@@ -420,9 +468,13 @@ async def open_checkout(slot: dict):
             if opt: await opt.click(); await page.wait_for_timeout(300)
         except Exception: pass
 
-        # Country
+        # Country — has search field to filter
         try:
             await page.click("[data-cy='managerCountry']"); await page.wait_for_timeout(400)
+            search = await page.query_selector("#searchInput_country")
+            if search:
+                await search.fill(profile_data['country'][:4])
+                await page.wait_for_timeout(500)
             opt = await page.query_selector("[data-cy='managerCountrySection']")
             if opt: await opt.click(); await page.wait_for_timeout(300)
         except Exception: pass
@@ -451,6 +503,12 @@ async def open_checkout(slot: dict):
 
         # Participants
         for i in range(visitors):
+            # Expand participant section if needed (participant 2+ are collapsed)
+            if i > 0:
+                try:
+                    expand = await page.query_selector(f"#participantElement_{i} div.tw-flex-grow > div")
+                    if expand: await expand.click(); await page.wait_for_timeout(500)
+                except Exception: pass
             p_first = participants[i].get('first_name', profile_data['first_name']) if i < len(participants) else profile_data['first_name']
             p_last = participants[i].get('last_name', profile_data['last_name']) if i < len(participants) else profile_data['last_name']
             await fill(f"#participantSurname_{i}", p_last)
@@ -528,6 +586,12 @@ async def open_checkout(slot: dict):
             send_telegram(TRIGGER_GROUP_CHAT_ID, f"⏰ Browser timeout for {date} {slot_time} — no payment detected")
 
         await browser.close()
+        # Also terminate the Chrome process if we launched it
+        try:
+            if chrome_proc and chrome_proc.poll() is None:
+                chrome_proc.terminate()
+        except Exception:
+            pass
         logger.info(f"Browser closed.")
 
 
