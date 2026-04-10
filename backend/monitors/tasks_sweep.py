@@ -164,8 +164,8 @@ def sweep_notify_slot(date, slot_id, slot_time):
 
     # Trigger snipe FIRST for tasks set to 'snipe' tier — recap locks the slot instantly
     try:
-        from .models import MonitorTask
-        from .lightning_snipe import lightning_snipe
+        from .models import MonitorTask, HeldSlot
+        from .epay_ssl import make_vatican_session
 
         day, month, year = date.split('/')
         iso_date = f"{year}-{month}-{day}"
@@ -177,30 +177,75 @@ def sweep_notify_slot(date, slot_id, slot_time):
         for task in snipe_tasks:
             # Check preferred times match
             if task.preferred_times:
-                all_times = ['09:00','09:30','10:00','10:30','11:00','11:30',
-                             '12:00','12:30','13:00','13:30','14:00','14:30',
-                             '15:00','15:30','16:00','16:30','17:00']
+                all_times = ['08:00','08:30','09:00','09:30','10:00','10:30',
+                             '11:00','11:30','12:00','12:30','13:00','13:30',
+                             '14:00','14:30','15:00','15:30','16:00','16:30',
+                             '17:00','17:30']
                 if task.preferred_times != all_times and slot_time not in task.preferred_times:
                     logger.debug(f"  Task #{task.id}: time {slot_time} not in preferred {task.preferred_times} — skip")
                     continue
 
-            logger.info(f"⚡ Sniping for task #{task.id} ({task.agency.name}) — recapping to lock slot")
+            logger.info(f"⚡ Snipe task #{task.id} ({task.agency.name}) — recapping to lock slot")
+
+            # RECAP IMMEDIATELY — locks slot for ~55 min, no token needed
             try:
-                result = lightning_snipe(
-                    task=task,
-                    date=date,
-                    slot_id=str(slot_id),
-                    slot_time=slot_time,
-                    ticket_id=task.ticket_id or '',
-                    ticket_name=task.ticket_name or "Musei Vaticani - Biglietti d'ingresso",
-                    visitors=task.visitors,
-                )
-                if result.get('success'):
-                    logger.info(f"  ✅ Snipe success: ref={result.get('reference')} in {result.get('elapsed_ms')}ms")
+                import time as _time
+                from .monitors.hold_manager import _get_services
+                s = make_vatican_session(use_proxy=True)
+
+                # Get fresh ticket_id
+                H_XHR = {'Accept':'application/json','X-Requested-With':'XMLHttpRequest','Referer':f'https://tickets.museivaticani.va/'}
+                r = s.get('https://tickets.museivaticani.va/api/search/resultPerTag', params={
+                    'lang':'it','visitorNum':str(task.visitors),'visitDate':date,
+                    'area':'1','who':'','page':'0','tag':'MV-Biglietti'
+                }, headers=H_XHR, timeout=8)
+                tid = None
+                if r.status_code == 200:
+                    t = next((v for v in r.json().get('visits',[])
+                               if 'musei vaticani' in v.get('name','').lower()
+                               and 'ingresso' in v.get('name','').lower()), None)
+                    if t: tid = t['id']
+
+                if not tid:
+                    logger.warning(f"  Could not get ticket_id for recap")
+                    continue
+
+                recap_body = {
+                    "visitId": str(slot_id), "visitTypeId": int(tid),
+                    "visitorNum": int(task.visitors), "lang": "it",
+                    "tickets": [
+                        {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(task.visitors)},
+                        {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+                    ],
+                    "additionalCosts": {"service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(task.visitors)}},
+                    "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(task.visitors)}],
+                }
+                HC = {'Accept':'application/json','Content-Type':'application/json',
+                      'Referer':'https://tickets.museivaticani.va/home/checkout',
+                      'Origin':'https://tickets.museivaticani.va'}
+                rr = s.post('https://tickets.museivaticani.va/api/visit/recap', json=recap_body, headers=HC, timeout=10)
+
+                if rr.status_code == 200:
+                    rd = rr.json()
+                    recap_id = rd.get('recapId','')
+                    total = rd.get('total', 0)
+                    logger.info(f"  🔒 Slot locked! recapId={recap_id} €{total}")
+
+                    # Save HeldSlot
+                    held = HeldSlot.objects.create(
+                        task=task, date=date, slot_id=str(slot_id), slot_time=slot_time,
+                        ticket_id=str(tid), ticket_name=task.ticket_name or "Musei Vaticani - Biglietti d'ingresso",
+                        visitors=task.visitors, total_price=total,
+                        jsessionid=s.cookies.get('JSESSIONID',''),
+                        ticketmv=s.cookies.get('ticketmv',''),
+                        recap_id=recap_id, status='held',
+                        notes=__import__('json').dumps({'serverid': s.cookies.get('SERVERID',''), 'participants': __import__('json').loads(task.participants_json or '[]')})
+                    )
+                    logger.info(f"  HeldSlot #{held.id} created")
                 else:
-                    logger.warning(f"  ❌ Snipe failed: {result.get('error')}")
+                    logger.warning(f"  Recap failed: {rr.status_code} {rr.text[:100]}")
             except Exception as e:
-                logger.error(f"  Snipe exception for task #{task.id}: {e}")
+                logger.error(f"  Recap exception for task #{task.id}: {e}")
 
     except Exception as e:
         logger.error(f"Sweep snipe trigger error: {e}")
