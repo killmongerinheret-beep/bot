@@ -38,6 +38,11 @@ POLL_INTERVAL = 10   # seconds between checks
 BROWSER_TIMEOUT = 20 * 60  # 20 minutes in seconds
 BASE = 'https://tickets.museivaticani.va'
 
+# Which Telegram group triggers browser opening (WOR group chat_id)
+# Set this to your WOR group chat_id — get it by running /start in the group
+# and checking the bot logs, or use /chatid command
+TRIGGER_GROUP_CHAT_ID = '-520664897'  # change to WOR group ID
+
 # Profile (same as BuyerProfile in DB)
 PROFILE = {
     'first_name': 'Aniile',
@@ -53,32 +58,96 @@ PROFILE = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 processed_slots = set()  # track which slots we've already opened
+last_update_id = 0      # Telegram update offset
 
 
-def send_telegram(msg: str):
-    """Send message to admin Telegram."""
+def send_telegram(chat_id: str, msg: str, reply_markup=None):
+    """Send message to a Telegram chat."""
+    payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'Markdown'}
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
     try:
         requests.post(
             f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-            json={'chat_id': ADMIN_CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'},
+            json=payload, timeout=5
+        )
+    except Exception:
+        pass
+
+
+def answer_callback(callback_query_id: str, text: str = ''):
+    """Answer a Telegram callback query (removes loading spinner)."""
+    try:
+        requests.post(
+            f'https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery',
+            json={'callback_query_id': callback_query_id, 'text': text},
             timeout=5
         )
     except Exception:
         pass
 
 
-def get_pending_slots():
-    """
-    Poll the server for held slots that need browser checkout.
-    Returns list of slot dicts.
-    """
+def get_telegram_updates():
+    """Poll Telegram for new updates (button clicks)."""
+    global last_update_id
     try:
-        r = requests.get(f'{SERVER_URL}/api/v1/held-slots/', timeout=8)
+        r = requests.get(
+            f'https://api.telegram.org/bot{BOT_TOKEN}/getUpdates',
+            params={'offset': last_update_id + 1, 'timeout': 5, 'allowed_updates': ['callback_query']},
+            timeout=10
+        )
+        if r.status_code == 200:
+            updates = r.json().get('result', [])
+            if updates:
+                last_update_id = updates[-1]['update_id']
+            return updates
+    except Exception:
+        pass
+    return []
+
+
+def get_trigger_group():
+    """Get the configured browser trigger group from server."""
+    try:
+        r = requests.get(f'{SERVER_URL}/api/v1/browser-trigger-group/', timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get('chat_id', TRIGGER_GROUP_CHAT_ID)
+    except Exception:
+        pass
+    return TRIGGER_GROUP_CHAT_ID
+    """Poll the server for held slots that need browser checkout."""
+    try:
+        r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=8)
         if r.status_code == 200:
             return r.json().get('results', [])
     except Exception:
         pass
     return []
+
+
+def notify_slot_with_button(slot: dict):
+    """Send slot notification to the trigger group with Open Browser button."""
+    date = slot.get('date', '')
+    slot_time = slot.get('slot_time', '')
+    visitors = slot.get('visitors', 1)
+    total = slot.get('total_price', '?')
+    hold_id = slot.get('id')
+
+    msg = (
+        f"🎫 *Slot Available — Open Browser to Book*\n\n"
+        f"📅 {date} {slot_time}\n"
+        f"👥 {visitors} visitors | €{total}\n\n"
+        f"Click the button to open Chrome on your machine.\n"
+        f"Form will be pre-filled — just solve Turnstile and click BUY."
+    )
+    reply_markup = {
+        'inline_keyboard': [[
+            {'text': '🌐 Open Browser', 'callback_data': f'open_browser:{hold_id}'}
+        ]]
+    }
+    send_telegram(TRIGGER_GROUP_CHAT_ID, msg, reply_markup)
+    logger.info(f"📢 Sent browser button to group {TRIGGER_GROUP_CHAT_ID}")
 
 
 async def open_checkout(slot: dict):
@@ -111,6 +180,7 @@ async def open_checkout(slot: dict):
     logger.info(f"{'='*60}")
 
     send_telegram(
+        TRIGGER_GROUP_CHAT_ID,
         f"🌐 *Browser opening for slot:*\n"
         f"📅 {date} {slot_time} | 👥 {visitors}v | €{total}\n"
         f"Solve Turnstile and click BUY when ready."
@@ -396,6 +466,7 @@ async def open_checkout(slot: dict):
                 ref = epay_result.get('reference','')
                 epay_url = epay_result.get('url','')
                 send_telegram(
+                    TRIGGER_GROUP_CHAT_ID,
                     f"✅ *Vatican ticket booked!*\n\n"
                     f"📅 {date} {slot_time} | 👥 {visitors}v | €{total}\n"
                     f"🔖 Ref: `{ref}`\n"
@@ -418,7 +489,7 @@ async def open_checkout(slot: dict):
             # Check if user navigated to epay
             if 'epay.catholica.va' in page.url:
                 logger.info(f"✅ User navigated to epay: {page.url[:80]}")
-                send_telegram(f"💳 Payment page opened for {date} {slot_time}")
+                send_telegram(TRIGGER_GROUP_CHAT_ID, f"💳 Payment page opened for {date} {slot_time}")
                 await asyncio.sleep(120)
                 break
 
@@ -427,35 +498,87 @@ async def open_checkout(slot: dict):
 
         else:
             logger.warning(f"⏰ 20 minute timeout — closing browser")
-            send_telegram(f"⏰ Browser timeout for {date} {slot_time} — no payment detected")
+            send_telegram(TRIGGER_GROUP_CHAT_ID, f"⏰ Browser timeout for {date} {slot_time} — no payment detected")
 
         await browser.close()
         logger.info(f"Browser closed.")
 
 
 async def main():
-    """Main polling loop."""
-    logger.info(f"🤖 Local Browser Agent started")
+    """
+    Main loop:
+    1. Poll server for new held slots → send button to WOR group
+    2. Poll Telegram for button clicks → open Chrome
+    """
+    global last_update_id
+
+    logger.info(f"🤖 Vatican Browser Agent started")
     logger.info(f"Server: {SERVER_URL}")
-    logger.info(f"Polling every {POLL_INTERVAL}s for new slots...")
+    logger.info(f"Trigger group: {TRIGGER_GROUP_CHAT_ID}")
+    logger.info(f"Polling every {POLL_INTERVAL}s...")
     logger.info(f"Press Ctrl+C to stop\n")
 
-    send_telegram(f"🤖 Local Browser Agent started on your machine")
+    send_telegram(ADMIN_CHAT_ID, f"🤖 Browser Agent started on your machine\nWaiting for slots in group `{TRIGGER_GROUP_CHAT_ID}`")
+
+    # pending_browser: hold_id → slot dict (waiting for button click)
+    pending_browser = {}
 
     while True:
         try:
+            # ── Check for new held slots ──────────────────────────────────────
             slots = get_pending_slots()
             for slot in slots:
-                slot_key = f"{slot.get('id')}_{slot.get('date')}_{slot.get('slot_time')}"
+                hold_id = slot.get('id')
+                slot_key = f"{hold_id}_{slot.get('date')}_{slot.get('slot_time')}"
                 if slot_key not in processed_slots and slot.get('status') in ('held', 'paying'):
                     processed_slots.add(slot_key)
-                    logger.info(f"New slot: {slot.get('date')} {slot.get('slot_time')}")
-                    await open_checkout(slot)
+                    pending_browser[str(hold_id)] = slot
+                    notify_slot_with_button(slot)
+                    logger.info(f"New slot notified: {slot.get('date')} {slot.get('slot_time')}")
+
+            # ── Check for button clicks in Telegram ───────────────────────────
+            updates = get_telegram_updates()
+            for update in updates:
+                cb = update.get('callback_query', {})
+                if not cb:
+                    continue
+                data = cb.get('data', '')
+                cb_id = cb.get('id', '')
+                user = cb.get('from', {})
+                user_name = user.get('first_name', 'Someone')
+
+                if data.startswith('open_browser:'):
+                    hold_id = data.split(':')[1]
+                    slot = pending_browser.get(hold_id)
+
+                    if not slot:
+                        # Fetch from server
+                        try:
+                            r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=5)
+                            if r.status_code == 200:
+                                all_slots = r.json().get('results', [])
+                                slot = next((s for s in all_slots if str(s.get('id')) == hold_id), None)
+                        except Exception:
+                            pass
+
+                    if slot:
+                        answer_callback(cb_id, f"Opening Chrome for {slot.get('date')} {slot.get('slot_time')}...")
+                        send_telegram(
+                            TRIGGER_GROUP_CHAT_ID,
+                            f"🌐 *{user_name}* clicked Open Browser\n"
+                            f"Chrome opening on the agent machine..."
+                        )
+                        logger.info(f"Button clicked by {user_name} for hold #{hold_id}")
+                        # Open browser (runs in background so we keep polling)
+                        asyncio.create_task(open_checkout(slot))
+                    else:
+                        answer_callback(cb_id, "Slot not found or already processed")
+
         except KeyboardInterrupt:
             logger.info("Stopped.")
             break
         except Exception as e:
-            logger.error(f"Poll error: {e}")
+            logger.error(f"Main loop error: {e}")
 
         await asyncio.sleep(POLL_INTERVAL)
 

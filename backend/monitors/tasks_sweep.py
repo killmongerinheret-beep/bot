@@ -208,6 +208,45 @@ def sweep_notify_slot(date, slot_id, slot_time):
     # Always notify (after snipe attempt so notify doesn't race)
     _notify_slot_available(date, slot_time)
 
+    # Send browser button to configured trigger group
+    try:
+        from django.core.cache import cache
+        from .notification_utils import send_telegram_signal
+        trigger = cache.get('browser_trigger_group')
+        if trigger:
+            chat_id = trigger.get('chat_id')
+            # Find the held slot we just created
+            from .models import HeldSlot
+            held = HeldSlot.objects.filter(
+                date=date, slot_time=slot_time, status__in=['held','paying']
+            ).order_by('-hold_started_at').first()
+            if held:
+                import json as _json
+                msg = (
+                    f"🎫 *Slot Locked — Book Now!*\n\n"
+                    f"📅 {date} {slot_time}\n"
+                    f"👥 {held.visitors} visitors | €{held.total_price}\n\n"
+                    f"Click to open Chrome on your machine:"
+                )
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                import requests as _req
+                BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+                _req.post(
+                    f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
+                    json={
+                        'chat_id': chat_id,
+                        'text': msg,
+                        'parse_mode': 'Markdown',
+                        'reply_markup': _json.dumps({'inline_keyboard': [[
+                            {'text': '🌐 Open Browser', 'callback_data': f'open_browser:{held.id}'}
+                        ]]})
+                    },
+                    timeout=5
+                )
+                logger.info(f"📢 Browser button sent to group {chat_id}")
+    except Exception as e:
+        logger.debug(f"Browser button send error: {e}")
+
     return f"Notified + sniped: {date} {slot_time}"
 
 

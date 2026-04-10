@@ -1614,6 +1614,31 @@ async def setpaymode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Task #{task_id} not found or not a snipe task.")
 
 
+async def setbrowsergroup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /setbrowsergroup — set this group as the browser trigger group.
+    When a slot is found, the bot sends a [🌐 Open Browser] button here.
+    Run this command IN the group you want to use (e.g. WOR group).
+    """
+    chat = update.effective_chat
+    chat_id = str(chat.id)
+    chat_title = chat.title or chat.first_name or chat_id
+
+    # Store in cache so local agent can read it
+    from django.core.cache import cache
+    cache.set('browser_trigger_group', {'chat_id': chat_id, 'title': chat_title}, timeout=None)
+
+    await update.message.reply_text(
+        f"✅ *Browser trigger group set!*\n\n"
+        f"Group: *{chat_title}*\n"
+        f"Chat ID: `{chat_id}`\n\n"
+        f"When a slot is detected, the bot will send a [🌐 Open Browser] button here.\n"
+        f"Click it to open Chrome on the agent machine.\n\n"
+        f"Make sure `run_agent.bat` is running on your Windows machine.",
+        parse_mode='Markdown'
+    )
+
+
 # ── Group join/leave handler ──────────────────────────────────────────────────
 
 def extract_status_change(chat_member_update: ChatMemberUpdated):
@@ -2061,6 +2086,7 @@ def main():
     app.add_handler(CommandHandler('setparticipants', setparticipants_cmd))
     app.add_handler(CommandHandler('setpaymode', setpaymode_cmd))
     app.add_handler(CommandHandler('bulkhold', bulkhold_cmd))
+    app.add_handler(CommandHandler('setbrowsergroup', setbrowsergroup_cmd))
     app.add_handler(CommandHandler('holds', holds_cmd))
     app.add_handler(CommandHandler('book', book_cmd))
     app.add_handler(CommandHandler('pending', pending_cmd))

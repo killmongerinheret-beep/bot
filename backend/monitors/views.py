@@ -914,6 +914,16 @@ def mark_slot_paid(request):
     return Response({'success': True, 'hold_id': hold_id, 'reference': reference})
 
 
+@api_view(['GET'])
+def get_browser_trigger_group(request):
+    """Return the configured browser trigger group chat_id."""
+    from django.core.cache import cache
+    trigger = cache.get('browser_trigger_group')
+    if trigger:
+        return Response(trigger)
+    return Response({'chat_id': None, 'title': None})
+
+
 @api_view(['POST'])
 def release_held_slot(request, hold_id):
     """Release a held slot."""
