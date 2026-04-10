@@ -366,16 +366,40 @@ async def open_checkout(slot: dict):
         # ── Set quantity ──────────────────────────────────────────────────────
         logger.info(f"[3] Setting quantity ({visitors})...")
         try:
+            # Open the quantity dropdown
             qty = await page.query_selector("[data-cy='ticketQuantity']")
-            if qty: await qty.click(); await page.wait_for_timeout(400)
-            qty_sec = await page.query_selector("[data-cy='ticketQuantitySection']")
-            if qty_sec: await qty_sec.click(); await page.wait_for_timeout(400)
-            for _ in range(visitors - 1):
-                q2 = await page.query_selector("[data-cy='ticketQuantity']")
-                if q2: await q2.click(); await page.wait_for_timeout(300)
-                q2s = await page.query_selector("[data-cy='ticketQuantitySection']")
-                if q2s: await q2s.click(); await page.wait_for_timeout(300)
+            if qty:
+                await qty.click()
+                await page.wait_for_timeout(500)
+
+            # Select the exact number from the dropdown list
+            # Options are [data-cy='ticketQuantitySection'] items with text "1", "2", etc.
+            selected = await page.evaluate(f"""
+                () => {{
+                    const sections = Array.from(document.querySelectorAll("[data-cy='ticketQuantitySection']"))
+                        .filter(el => el.offsetParent !== null);
+                    for (const sec of sections) {{
+                        const text = sec.innerText.trim();
+                        if (text === '{visitors}' || text.startsWith('{visitors} ')) {{
+                            sec.click();
+                            return text;
+                        }}
+                    }}
+                    // Fallback: click the Nth item (0-indexed, so visitors-1)
+                    if (sections.length >= {visitors}) {{
+                        sections[{visitors - 1}].click();
+                        return sections[{visitors - 1}].innerText.trim();
+                    }}
+                    return null;
+                }}
+            """)
+            if selected:
+                logger.info(f"  ✅ Quantity selected: {selected}")
+            else:
+                logger.warning(f"  Could not find quantity {visitors} in dropdown")
+            await page.wait_for_timeout(400)
         except Exception as e:
+            logger.debug(f"  Quantity: {e}")
             logger.debug(f"  Quantity: {e}")
 
         # ── Select time slot ──────────────────────────────────────────────────
