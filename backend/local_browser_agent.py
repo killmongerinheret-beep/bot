@@ -45,14 +45,14 @@ TRIGGER_GROUP_CHAT_ID = '-5245239270'  # WOR Bot group
 
 # Profile (same as BuyerProfile in DB)
 PROFILE = {
-    'first_name': 'Aniile',
-    'last_name': 'Skear',
-    'email': 'killmongerinheret@gmail.com',
-    'phone': '3481716428',
-    'city': 'ROMA',
-    'country': 'Afghanistan',
+    'first_name': 'Great',
+    'last_name': 'Aby',
+    'email': 'wondersoffcity@gmail.com',
+    'phone': '3517869798',
+    'city': 'Roma',
+    'country': 'Italy',
     'gender': 'M',
-    'birth_date': {'year': 1987, 'month': 'JUN', 'day': 9},
+    'birth_date': {'year': 2000, 'month': 'JUL', 'day': 25},
     'language': 'en',
 }
 # ─────────────────────────────────────────────────────────────────────────────
