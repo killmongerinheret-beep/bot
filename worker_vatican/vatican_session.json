@@ -2,7 +2,7 @@
   "cookies": [
     {
       "name": "JSESSIONID",
-      "value": "E92AC2924465E0E1B2FEE33AD8B6F64B",
+      "value": "0EA901328C55AD4F974AC61529D7344E",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -22,7 +22,7 @@
     },
     {
       "name": "SERVERID",
-      "value": "03|adksu",
+      "value": "01|adk5Q",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -3185,7 +3185,145 @@
       ],
       "jsessionid": "E92AC2924465E0E1B2FEE33AD8B6F64B",
       "timestamp": "2026-04-10T17:01:24.058465"
+    },
+    "04/05/2026_1_0": {
+      "ids": [
+        {
+          "id": "1155828002",
+          "name": "Specola Vaticana - Visita Guidata Gruppi"
+        },
+        {
+          "id": "984381516",
+          "name": "Palazzo Papale - Cupole Astronomiche"
+        },
+        {
+          "id": "211404805",
+          "name": "Palazzo Papale - Biglietti d'ingresso"
+        },
+        {
+          "id": "2106121295",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "2015995480",
+          "name": "Palazzo Papale - Visita Guidata Gruppi"
+        },
+        {
+          "id": "39958319",
+          "name": "Palazzo Papale - Reparti Chiusi"
+        },
+        {
+          "id": "725744263",
+          "name": "Palazzo Papale - Reparti Chiusi"
+        },
+        {
+          "id": "1585911741",
+          "name": "N. Partecipanti 11 - 25"
+        },
+        {
+          "id": "1243018769",
+          "name": "N. Partecipanti 11 - 30"
+        },
+        {
+          "id": "1763228323",
+          "name": "Borgo Laudato si' - Mezzo Ecologico"
+        }
+      ],
+      "jsessionid": "F7ACA78A8A5BAB7AE73482C8625E1077",
+      "timestamp": "2026-04-10T17:47:55.159897"
+    },
+    "09/05/2026_2_0": {
+      "ids": [
+        {
+          "id": "1707106282",
+          "name": "Musei Vaticani - Biglietti d'ingresso"
+        },
+        {
+          "id": "1062325763",
+          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
+        },
+        {
+          "id": "7234431",
+          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
+        },
+        {
+          "id": "1719539943",
+          "name": "N. Partecipanti 1 - 28"
+        },
+        {
+          "id": "131571041",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "119137380",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1199096034",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1049892102",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1223963356",
+          "name": "N. Partecipanti 11 - 30"
+        },
+        {
+          "id": "56969075",
+          "name": "N. Partecipanti 11 - 30"
+        }
+      ],
+      "jsessionid": "28A30D363A85A53AB1B26F1AA3547ED2",
+      "timestamp": "2026-04-10T17:51:15.788060"
+    },
+    "19/06/2026_2_0": {
+      "ids": [
+        {
+          "id": "367187410",
+          "name": "Musei Vaticani - Biglietti d'ingresso"
+        },
+        {
+          "id": "1569927930",
+          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
+        },
+        {
+          "id": "1155376725",
+          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
+        },
+        {
+          "id": "1431744195",
+          "name": "N. Partecipanti 1 - 20"
+        },
+        {
+          "id": "1017192990",
+          "name": "N. Partecipanti 1 - 20"
+        },
+        {
+          "id": "90819940",
+          "name": "N. Partecipanti 1 - 28"
+        },
+        {
+          "id": "539185672",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "815553142",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "677369407",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1846295400",
+          "name": "N. Partecipanti 1 - 10"
+        }
+      ],
+      "jsessionid": "0EA901328C55AD4F974AC61529D7344E",
+      "timestamp": "2026-04-10T17:54:20.405240"
     }
   },
-  "last_updated": "2026-04-10T17:01:24.058482"
+  "last_updated": "2026-04-10T17:54:20.405256"
 }

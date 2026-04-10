@@ -190,7 +190,6 @@ def sweep_notify_slot(date, slot_id, slot_time):
             # RECAP IMMEDIATELY — locks slot for ~55 min, no token needed
             try:
                 import time as _time
-                from .monitors.hold_manager import _get_services
                 s = make_vatican_session(use_proxy=True)
 
                 # Get fresh ticket_id

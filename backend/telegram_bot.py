@@ -1059,8 +1059,8 @@ async def do_create_monitor(query, context):
                 # Quick check for the target date/times
                 s = make_vatican_session(use_proxy=True)
                 H = {'Accept':'application/json','X-Requested-With':'XMLHttpRequest','Referer':'https://tickets.museivaticani.va/'}
-                d_fmt = date.replace('-', '/')
-                day, month, year = d_fmt.split('/')
+                # date is YYYY-MM-DD, convert to DD/MM/YYYY for API
+                year, month, day = date.split('-')
                 d_api = f"{day}/{month}/{year}"
 
                 r = s.get('https://tickets.museivaticani.va/api/search/resultPerTag', params={
