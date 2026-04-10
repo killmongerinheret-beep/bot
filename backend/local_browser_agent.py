@@ -7,12 +7,13 @@ Turnstile and click BUY, captures the epay URL, sends it to Telegram.
 
 Browser auto-closes after 20 minutes to save RAM.
 
-Setup (run once):
-  pip install playwright requests
-  playwright install chromium
+Setup (run once in PowerShell):
+  python -m pip install playwright requests
+  python -m playwright install chromium
 
 Run:
   python local_browser_agent.py
+  (or double-click run_agent.bat)
 
 The script polls the server every 10 seconds for new held slots.
 When one appears, it opens Chrome automatically.
