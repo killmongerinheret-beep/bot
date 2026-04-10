@@ -717,4 +717,15 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    import sys
+    # Watchdog: restart on crash
+    while True:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("Agent stopped by user.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Agent crashed: {e} — restarting in 10s...")
+            import time as _t
+            _t.sleep(10)
