@@ -552,7 +552,6 @@ async def main():
                     slot = pending_browser.get(hold_id)
 
                     if not slot:
-                        # Fetch from server
                         try:
                             r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=5)
                             if r.status_code == 200:
@@ -563,16 +562,33 @@ async def main():
 
                     if slot:
                         answer_callback(cb_id, f"Opening Chrome for {slot.get('date')} {slot.get('slot_time')}...")
-                        send_telegram(
-                            TRIGGER_GROUP_CHAT_ID,
-                            f"🌐 *{user_name}* clicked Open Browser\n"
-                            f"Chrome opening on the agent machine..."
-                        )
+                        send_telegram(TRIGGER_GROUP_CHAT_ID,
+                            f"🌐 *{user_name}* clicked Open Browser\nChrome opening...")
                         logger.info(f"Button clicked by {user_name} for hold #{hold_id}")
-                        # Open browser (runs in background so we keep polling)
                         asyncio.create_task(open_checkout(slot))
                     else:
                         answer_callback(cb_id, "Slot not found or already processed")
+
+                elif data.startswith('open_browser_slot:'):
+                    # Notify-only task — no HeldSlot, agent does full flow
+                    import base64
+                    try:
+                        slot_info = base64.b64decode(data.split(':', 1)[1]).decode()
+                        date_str, slot_time_str, slot_id_str = slot_info.split('|')
+                        slot = {
+                            'date': date_str, 'slot_time': slot_time_str,
+                            'slot_id': slot_id_str, 'visitors': 1,
+                            'total_price': '?', 'id': None,
+                        }
+                        answer_callback(cb_id, f"Opening Chrome for {date_str} {slot_time_str}...")
+                        send_telegram(TRIGGER_GROUP_CHAT_ID,
+                            f"🌐 *{user_name}* clicked Open Browser\n"
+                            f"Chrome opening for {date_str} {slot_time_str}...")
+                        logger.info(f"Slot button: {user_name} → {date_str} {slot_time_str}")
+                        asyncio.create_task(open_checkout(slot))
+                    except Exception as e:
+                        answer_callback(cb_id, "Error")
+                        logger.error(f"open_browser_slot error: {e}")
 
         except KeyboardInterrupt:
             logger.info("Stopped.")
