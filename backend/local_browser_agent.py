@@ -41,7 +41,7 @@ BASE = 'https://tickets.museivaticani.va'
 # Which Telegram group triggers browser opening (WOR group chat_id)
 # Set this to your WOR group chat_id — get it by running /start in the group
 # and checking the bot logs, or use /chatid command
-TRIGGER_GROUP_CHAT_ID = '-520664897'  # change to WOR group ID
+TRIGGER_GROUP_CHAT_ID = '-5245239270'  # WOR Bot group
 
 # Profile (same as BuyerProfile in DB)
 PROFILE = {
