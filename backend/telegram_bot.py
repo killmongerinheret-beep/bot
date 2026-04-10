@@ -112,17 +112,23 @@ def kb_language():
         [InlineKeyboardButton("❌ Cancel",     callback_data='cancel')],
     ])
 
-def kb_times():
-    """Exact Vatican time slots — 30 min intervals 09:00–17:00, plus Any."""
-    slots = ['09:00','09:30','10:00','10:30','11:00','11:30',
+def kb_times(selected=None):
+    """Exact Vatican time slots — tap to toggle, Done when ready."""
+    selected = selected or []
+    slots = ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30',
              '12:00','12:30','13:00','13:30','14:00','14:30',
-             '15:00','15:30','16:00','16:30','17:00']
+             '15:00','15:30','16:00','16:30','17:00','17:30']
     rows = []
-    # 3 per row
     for i in range(0, len(slots), 3):
-        row = [InlineKeyboardButton(t, callback_data=f'time:{t}') for t in slots[i:i+3]]
+        row = []
+        for t in slots[i:i+3]:
+            check = '✅ ' if t in selected else ''
+            row.append(InlineKeyboardButton(f"{check}{t}", callback_data=f'time:{t}'))
         rows.append(row)
-    rows.append([InlineKeyboardButton("⏰ Any Time", callback_data='time:any')])
+    # Bottom row
+    done_label = f"✅ Done ({len(selected)} selected)" if selected else "⏰ Any Time"
+    done_data = 'time:done' if selected else 'time:any'
+    rows.append([InlineKeyboardButton(done_label, callback_data=done_data)])
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel')])
     return InlineKeyboardMarkup(rows)
 
@@ -566,22 +572,44 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith('time:'):
         slot = data.split(':', 1)[1]
+        selected = ud.get('selected_times', [])
+
         if slot == 'any':
-            times = ['09:00','09:30','10:00','10:30','11:00','11:30',
-                     '12:00','12:30','13:00','13:30','14:00','14:30',
-                     '15:00','15:30','16:00','16:30','17:00']
-            label = 'Any Time'
+            # Any time — clear selection and confirm
+            ud['preferred_times'] = ['08:00','08:30','09:00','09:30','10:00','10:30',
+                                     '11:00','11:30','12:00','12:30','13:00','13:30',
+                                     '14:00','14:30','15:00','15:30','16:00','16:30',
+                                     '17:00','17:30']
+            ud['times_label'] = 'Any Time'
+            ud['step'] = 'confirm'
+            await query.edit_message_text(
+                f"📋 *Confirm New Monitor*\n\n{summary(ud)}\n\nAdd this monitor?",
+                parse_mode='Markdown', reply_markup=kb_confirm()
+            )
+        elif slot == 'done':
+            # Finalize selection
+            if not selected:
+                await query.answer("Select at least one time first!", show_alert=True)
+                return
+            ud['preferred_times'] = sorted(selected)
+            ud['times_label'] = ', '.join(sorted(selected))
+            ud['step'] = 'confirm'
+            await query.edit_message_text(
+                f"📋 *Confirm New Monitor*\n\n{summary(ud)}\n\nAdd this monitor?",
+                parse_mode='Markdown', reply_markup=kb_confirm()
+            )
         else:
-            times = [slot]
-            label = slot
-        ud['preferred_times'] = times
-        ud['times_label'] = label
-        ud['step'] = 'confirm'
-        await query.edit_message_text(
-            f"📋 *Confirm New Monitor*\n\n{summary(ud)}\n\nAdd this monitor?",
-            parse_mode='Markdown',
-            reply_markup=kb_confirm()
-        )
+            # Toggle this time slot
+            if slot in selected:
+                selected.remove(slot)
+            else:
+                selected.append(slot)
+            ud['selected_times'] = selected
+            label = f"⏰ Select times ({len(selected)} selected)" if selected else "⏰ Select time slots:"
+            await query.edit_message_text(
+                f"{label}\nTap to toggle, then tap ✅ Done",
+                reply_markup=kb_times(selected)
+            )
         return
 
     if data.startswith('tier:locked_'):
@@ -616,7 +644,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n"
                 f"✅ Ticket: {ud.get('ticket_label','')}\n✅ Mode: {ud['tier_label']}\n\n"
                 f"⏰ Select preferred time:",
-                reply_markup=kb_times()
+                reply_markup=kb_times(ud.get("selected_times",[]))
             )
         return
 
@@ -627,7 +655,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ud['step'] = 'times'
         await query.edit_message_text(
             f"✅ Checkout: {method_label}\n\n⏰ Select the time slot to snipe:",
-            reply_markup=kb_times()
+            reply_markup=kb_times(ud.get("selected_times",[]))
         )
         return
 
