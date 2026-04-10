@@ -1,4 +1,4 @@
-"""Debug afternoon time slot - find correct selector"""
+"""Debug: find and click POMERIGGIO tab to reveal afternoon slots"""
 import os, sys, django, asyncio
 sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
@@ -9,13 +9,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 BASE = 'https://tickets.museivaticani.va'
-# Use April 17 17:30 which is also locked by us
 DATE = '05/05/2026'
 SLOT_TIME = '16:30'
 VISITORS = 1
 
 agency = Agency.objects.filter(is_active=True).exclude(plan='system').first()
-profile = BuyerProfile.objects.filter(agency=agency).first()
 
 async def debug():
     from playwright.async_api import async_playwright
@@ -45,55 +43,77 @@ async def debug():
             headers=H_XHR)
         visits = (await r.json()).get('visits', [])
         ticket = next((v for v in visits if 'musei vaticani' in v.get('name','').lower() and 'ingresso' in v.get('name','').lower()), None)
-        tid = str(ticket['id']) if ticket else None
-        avail = ticket.get('availability') if ticket else 'N/A'
-        print(f"Ticket: tid={tid} avail={avail}")
+        if not ticket: print("No ticket"); await browser.close(); return
+        tid = str(ticket['id'])
 
-        if not ticket or avail not in ('AVAILABLE','LOW_AVAILABILITY'):
-            print("Slot locked by our recap — good! But Playwright needs an available slot.")
-            print("The Playwright checkout flow is for BUYING a slot, not for locked ones.")
-            print("For locked slots, use the API reservation (needs 2captcha token).")
-            await browser.close()
-            return
-
+        # Full flow: bookTicket → quantity → check tabs
         await page.click(f"[data-cy='bookTicket_{tid}']")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1500)
+        qty = await page.query_selector("[data-cy='ticketQuantity']")
+        if qty: await qty.click(); await page.wait_for_timeout(300)
+        qty_sec = await page.query_selector("[data-cy='ticketQuantitySection']")
+        if qty_sec: await qty_sec.click(); await page.wait_for_timeout(500)
 
-        # Get ALL time elements including hidden ones
-        all_time_els = await page.evaluate("""
-            () => Array.from(document.querySelectorAll("[data-cy='time'] *"))
-                .filter(el => /^\\d{2}:\\d{2}$/.test(el.innerText.trim()))
+        # Find all tabs in the time table
+        tabs = await page.evaluate("""
+            () => Array.from(document.querySelectorAll('.tab, .timeTabContainer .tab, div.tab'))
+                .filter(el => el.offsetParent !== null)
                 .map(el => ({
                     text: el.innerText.trim(),
                     cls: el.className,
-                    visible: el.offsetParent !== null,
-                    parent_cls: el.parentElement ? el.parentElement.className : ''
+                    selected: el.className.includes('selected')
                 }))
         """)
-        print(f"\nAll time elements ({len(all_time_els)}):")
-        for t in all_time_els:
-            print(f"  {t['text']} | visible={t['visible']} | cls={t['cls'][:30]} | parent={t['parent_cls'][:30]}")
+        print(f"Tabs found: {tabs}")
 
-        # Check the showGTMobile structure from recording
-        mobile_structure = await page.evaluate("""
+        # Click POMERIGGIO tab
+        clicked = await page.evaluate("""
             () => {
-                const mobile = document.querySelector('div.showGTMobile');
-                if (!mobile) return 'no showGTMobile';
-                const divs = Array.from(mobile.querySelectorAll(':scope > div > div'));
-                return divs.map((el, i) => ({
-                    index: i,
-                    cls: el.className.substring(0,50),
-                    text: el.innerText.trim().substring(0,40),
-                    visible: el.offsetParent !== null
-                }));
+                // Find tab with POMERIGGIO text
+                const tabs = Array.from(document.querySelectorAll('.tab, div.tab, .timeTabContainer div'))
+                    .filter(el => el.offsetParent !== null);
+                for (const tab of tabs) {
+                    const text = tab.innerText.trim().toUpperCase();
+                    if (text.includes('POMERIGGIO') || text.includes('AFTERNOON') || text.includes('PM')) {
+                        tab.click();
+                        return `clicked: ${tab.innerText.trim()}`;
+                    }
+                }
+                // Try clicking 2nd tab
+                const allTabs = Array.from(document.querySelectorAll('.tab'))
+                    .filter(el => el.offsetParent !== null);
+                if (allTabs.length >= 2) {
+                    allTabs[1].click();
+                    return `clicked 2nd tab: ${allTabs[1].innerText.trim()}`;
+                }
+                return 'no tab found';
             }
         """)
-        print(f"\nshowGTMobile > div > div structure:")
-        for s in mobile_structure[:10]:
-            print(f"  [{s['index']}] cls={s['cls'][:40]} | '{s['text'][:30]}' | visible={s['visible']}")
+        print(f"Tab click result: {clicked}")
+        await page.wait_for_timeout(1500)
 
-        await page.screenshot(path='/tmp/afternoon_debug.png')
-        print(f"\nScreenshot: /tmp/afternoon_debug.png")
+        # Check times after tab click
+        times = await page.evaluate("""
+            () => Array.from(document.querySelectorAll("[data-cy='time'] div.muvaCalendarNumber, [data-cy='time'] div.muvaCalendarDaySoldOut"))
+                .map(el => ({text: el.innerText.trim(), cls: el.className, parent: el.parentElement.className}))
+                .filter(t => /^\\d{2}:\\d{2}$/.test(t.text))
+        """)
+        print(f"\nTimes after tab click ({len(times)}):")
+        for t in times:
+            marker = " ← TARGET" if t['text'] == SLOT_TIME else ""
+            print(f"  {t['text']} | cls={t['cls'][:20]} | parent={t['parent'][:30]}{marker}")
+
+        # Get full tab container HTML for analysis
+        tab_html = await page.evaluate("""
+            () => {
+                const c = document.querySelector('.timeTabContainer, .showGTMobile');
+                return c ? c.innerHTML.substring(0, 800) : 'not found';
+            }
+        """)
+        print(f"\nTab container HTML:\n{tab_html[:600]}")
+
+        await page.screenshot(path='/tmp/afternoon_tabs.png')
+        print(f"\nScreenshot: /tmp/afternoon_tabs.png")
         await browser.close()
 
 asyncio.run(debug())

@@ -22,7 +22,7 @@ profile = BuyerProfile.objects.filter(agency=agency).first()
 print(f"Profile: {profile.first_name} {profile.last_name} | {profile.email}\n")
 
 # Use a known available slot to skip the scan (Vatican is rate limiting)
-found = {'date': '15/04/2026', 'slot_time': '17:00'}
+found = {'date': '05/05/2026', 'slot_time': '16:30'}
 print(f"Using hardcoded slot: {found['date']} {found['slot_time']}")
 
 print(f"\nRunning Playwright checkout...")

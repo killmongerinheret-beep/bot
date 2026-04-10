@@ -72,24 +72,72 @@ async def checkout_full_ui(
     }
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-blink-features=AutomationControlled',
-                  '--disable-dev-shm-usage', '--disable-gpu']
-        )
-        ctx = await browser.new_context(
-            locale='it-IT', timezone_id='Europe/Rome',
+        # Try headless first; if Turnstile doesn't solve, relaunch headful
+        for attempt, headless in enumerate([True, False]):
+            mode = 'headless' if headless else 'headful'
+            logger.info(f"🌐 Playwright attempt {attempt+1}/2 ({mode})")
+            attempt_result = await _run_checkout_attempt(
+                p, entry_url, date, slot_time, visitors, profile,
+                H_XHR, headless=headless, timeout_s=timeout_s, result=result
+            )
+            if attempt_result.get('success') or attempt_result.get('turnstile_solved'):
+                return attempt_result
+            if attempt == 0:
+                logger.warning(f"  Headless Turnstile failed — relaunching as headful browser")
+            result = attempt_result
+
+    return result
+
+
+async def _run_checkout_attempt(p, entry_url, date, slot_time, visitors, profile,
+                                 H_XHR, headless, timeout_s, result):
+    """Single checkout attempt — headless or headful."""
+    user_data_dir = '/tmp/pw_vatican_profile'
+    launch_args = [
+        '--no-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--window-size=828,915',
+    ]
+    if headless:
+        launch_args.append('--disable-gpu')
+    else:
+        # Start virtual display for headful mode in Docker
+        import subprocess, os as _os
+        try:
+            subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1280x1024x24'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import time as _time; _time.sleep(1)
+        except Exception:
+            pass
+        _os.environ['DISPLAY'] = ':99'
+        launch_args.append('--display=:99')
+
+    try:
+        ctx = await p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=headless,
+            args=launch_args,
+            locale='it-IT',
+            timezone_id='Europe/Rome',
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
             viewport={'width': 828, 'height': 915},
+            extra_http_headers={'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7'},
         )
-        await ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-            "window.chrome={runtime:{}};"
-        )
-        page = await ctx.new_page()
+    except Exception as e:
+        result['error'] = f"Browser launch failed: {e}"
+        return result
 
-        # Capture reservation response
-        async def on_response(response):
+    await ctx.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
+        Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['it-IT','it','en-US','en']});
+    """)
+    page = await ctx.new_page()
+
+    # Capture reservation response
+    async def on_response(response):
             if '/api/visit/reservation' in response.url:
                 try:
                     data = await response.json()
@@ -117,8 +165,8 @@ async def checkout_full_ui(
                 except Exception as e:
                     logger.warning(f"  Response parse: {e}")
 
-        # Capture epay navigation
-        async def on_request(request):
+    # Capture epay navigation
+    async def on_request(request):
             url = request.url
             if 'epay.catholica.va/pay/public/init/' in url:
                 import re
@@ -131,10 +179,10 @@ async def checkout_full_ui(
                     result['success'] = True
                     logger.info(f"  🎯 Epay: siv={m.group(1)[:20]} mac={m.group(2)[:10]}")
 
-        page.on('response', on_response)
-        page.on('request', on_request)
+    page.on('response', on_response)
+    page.on('request', on_request)
 
-        try:
+    try:
             # ── 1. Navigate ───────────────────────────────────────────────────
             logger.info(f"[1] {entry_url}")
             await page.goto(entry_url, wait_until='networkidle', timeout=30000)
@@ -146,7 +194,7 @@ async def checkout_full_ui(
                         'area':'1','who':'','page':'0','tag':'MV-Biglietti'},
                 headers=H_XHR)
             if r.status != 200:
-                result['error'] = f"Search {r.status}"; await browser.close(); return result
+                result['error'] = f"Search {r.status}"; await ctx.close(); return result
 
             visits = (await r.json()).get('visits', [])
             ticket = next((v for v in visits
@@ -154,7 +202,7 @@ async def checkout_full_ui(
                            and 'ingresso' in v.get('name','').lower()
                            and v.get('availability') in ('AVAILABLE','LOW_AVAILABILITY')), None)
             if not ticket:
-                result['error'] = 'No standard entry available'; await browser.close(); return result
+                result['error'] = 'No standard entry available'; await ctx.close(); return result
 
             tid = str(ticket['id'])
             logger.info(f"  ticket_id={tid}")
@@ -169,53 +217,64 @@ async def checkout_full_ui(
             except Exception as e:
                 logger.warning(f"  bookTicket not found ({e}) — card may already be expanded")
 
-            # ── 4. Navigate to correct time section ───────────────────────────
-            # Vatican shows times in two sections: morning (08:00-14:00) and afternoon (14:30+)
-            # If target time is afternoon, click the 2nd section header to reveal it
-            logger.info(f"[4] Navigating to time section for {slot_time}...")
+            # ── 4. Set quantity (MUST be before time selection) ───────────────
+            # From recordings: ticketQuantity + ticketQuantitySection enables PROCEDI
+            logger.info(f"[4] Setting quantity ({visitors})...")
+            try:
+                qty = await page.query_selector("[data-cy='ticketQuantity']")
+                if qty: await qty.click(); await page.wait_for_timeout(400)
+                qty_sec = await page.query_selector("[data-cy='ticketQuantitySection']")
+                if qty_sec: await qty_sec.click(); await page.wait_for_timeout(400); logger.info(f"  ✅ Quantity set")
+                for _ in range(visitors - 1):
+                    q2 = await page.query_selector("[data-cy='ticketQuantity']")
+                    if q2: await q2.click(); await page.wait_for_timeout(300)
+                    q2s = await page.query_selector("[data-cy='ticketQuantitySection']")
+                    if q2s: await q2s.click(); await page.wait_for_timeout(300)
+            except Exception as e:
+                logger.debug(f"  Quantity: {e}")
+
+            # ── 5. Navigate to correct time section ───────────────────────────
+            # Vatican shows MATTINA (morning) and POMERIGGIO (afternoon) tabs
+            logger.info(f"[5] Navigating to time section for {slot_time}...")
             target_mins = int(slot_time.split(':')[0]) * 60 + int(slot_time.split(':')[1])
 
-            # First check what's visible
+            # Check initial times (morning tab is selected by default)
             all_times_initial = await page.evaluate("""
                 () => Array.from(document.querySelectorAll(
                     "[data-cy='time'] div.muvaCalendarNumber, [data-cy='time'] div.muvaCalendarDaySoldOut"
                 )).map(el => el.innerText.trim()).filter(t => /^\\d{2}:\\d{2}$/.test(t))
             """)
-            logger.info(f"  Initial times: {all_times_initial}")
+            logger.info(f"  Initial times (MATTINA): {all_times_initial}")
 
             if slot_time not in all_times_initial and target_mins >= 14 * 60:
-                # Need to click the afternoon section (2nd section in the time table)
-                logger.info(f"  Target is afternoon — clicking 2nd section...")
-                clicked_section = await page.evaluate("""
+                # Click POMERIGGIO tab to reveal afternoon slots
+                logger.info(f"  Clicking POMERIGGIO tab...")
+                clicked = await page.evaluate("""
                     () => {
-                        // The time table has section headers — click the 2nd one (afternoon)
-                        const sections = Array.from(document.querySelectorAll(
-                            'div.showGTMobile > div > div'
-                        )).filter(el => el.offsetParent !== null);
-                        if (sections.length >= 2) {
-                            sections[1].click();
-                            return sections.length;
+                        const tabs = Array.from(document.querySelectorAll('.tab'))
+                            .filter(el => el.offsetParent !== null);
+                        for (const tab of tabs) {
+                            if (tab.innerText.trim().toUpperCase().includes('POMERIGGIO')) {
+                                tab.click();
+                                return 'POMERIGGIO';
+                            }
                         }
-                        // Alternative: look for the time table page navigation
-                        const timeTable = document.querySelector('app-ticket-time-table');
-                        if (timeTable) {
-                            const divs = Array.from(timeTable.querySelectorAll('div > div'))
-                                .filter(el => el.offsetParent !== null);
-                            if (divs.length >= 2) { divs[1].click(); return 'tt-' + divs.length; }
-                        }
+                        // Fallback: click 2nd tab
+                        if (tabs.length >= 2) { tabs[1].click(); return '2nd tab'; }
                         return false;
                     }
                 """)
-                logger.info(f"  Section click result: {clicked_section}")
-                await page.wait_for_timeout(1500)
+                logger.info(f"  Tab click: {clicked}")
+                await page.wait_for_timeout(1000)
 
-            # ── 5. Click the target time slot ─────────────────────────────────
+            # ── 6. Click the target time slot ─────────────────────────────────
             logger.info(f"[5] Clicking time slot...")
             all_times = await page.evaluate("""
                 () => Array.from(document.querySelectorAll(
                     "[data-cy='time'] div.muvaCalendarNumber, [data-cy='time'] div.muvaCalendarDaySoldOut"
                 )).map(el => el.innerText.trim()).filter(t => /^\\d{2}:\\d{2}$/.test(t))
             """)
+            logger.info(f"  Times: {all_times}")
 
             if all_times:
                 exact = slot_time if slot_time in all_times else None
@@ -241,45 +300,6 @@ async def checkout_full_ui(
                     await page.wait_for_timeout(1500)
             else:
                 logger.warning(f"  No time slots found")
-
-            # ── 6. Set quantity ───────────────────────────────────────────────
-            # From recordings: click dropdown arrow then ticketQuantitySection
-            logger.info(f"[6] Setting quantity ({visitors})...")
-            try:
-                # Try the + button first (recording 1 style)
-                qty_plus = await page.query_selector("[data-cy='ticketQuantity']")
-                if qty_plus:
-                    await qty_plus.click()
-                    await page.wait_for_timeout(400)
-                else:
-                    # Try dropdown arrow (recording 2 style)
-                    dropdown_arrow = await page.query_selector(
-                        "app-ticket-price-list div.icon-down-open > mat-icon, "
-                        "[data-cy='ticketQuantity'] mat-icon"
-                    )
-                    if dropdown_arrow:
-                        await dropdown_arrow.click()
-                        await page.wait_for_timeout(400)
-
-                # Click the quantity section item
-                qty_sec = await page.query_selector("[data-cy='ticketQuantitySection']")
-                if qty_sec:
-                    await qty_sec.click()
-                    await page.wait_for_timeout(400)
-                    logger.info(f"  ✅ Quantity set")
-
-                # For visitors > 1, repeat
-                for _ in range(visitors - 1):
-                    qty2 = await page.query_selector("[data-cy='ticketQuantity']")
-                    if qty2:
-                        await qty2.click()
-                        await page.wait_for_timeout(300)
-                    qty_sec2 = await page.query_selector("[data-cy='ticketQuantitySection']")
-                    if qty_sec2:
-                        await qty_sec2.click()
-                        await page.wait_for_timeout(300)
-            except Exception as e:
-                logger.debug(f"  Quantity: {e}")
 
             # ── 7. Click PROCEED ──────────────────────────────────────────────
             logger.info(f"[7] Clicking PROCEED...")
@@ -428,15 +448,19 @@ async def checkout_full_ui(
 
             # ── 11. Wait for Turnstile ────────────────────────────────────────
             logger.info(f"[11] Waiting for Turnstile ({timeout_s}s)...")
-            # From recording 2: click div.captchaContainer to trigger Turnstile
             try:
-                captcha_div = await page.query_selector("div.captchaContainer")
-                if captcha_div:
-                    await captcha_div.click()
+                captcha = await page.query_selector("div.captchaContainer, iframe[src*='turnstile']")
+                if captcha:
+                    await captcha.scroll_into_view_if_needed()
+                    await captcha.click()
                     await page.wait_for_timeout(1000)
-            except Exception: pass
+            except Exception:
+                pass
 
-            for i in range(timeout_s):
+            # Headless: only wait 60s, then bail so we can retry headful
+            wait_time = 60 if headless else timeout_s
+            turnstile_solved = False
+            for i in range(wait_time):
                 await asyncio.sleep(1)
                 try:
                     val = await page.evaluate(
@@ -445,12 +469,18 @@ async def checkout_full_ui(
                     )
                     if val and len(val) > 100:
                         logger.info(f"  ✅ Turnstile solved! prefix={val[:4]} len={len(val)}")
+                        turnstile_solved = True
                         break
-                    if i % 30 == 0 and i > 0:
+                    if i % 20 == 0 and i > 0:
                         logger.info(f"  ... {i}s | URL={page.url}")
                 except Exception:
                     pass
             else:
+                if headless:
+                    logger.warning(f"  Headless Turnstile timeout — retrying with headful browser")
+                    result['turnstile_solved'] = False
+                    await ctx.close()
+                    return result
                 logger.warning(f"  Turnstile timeout — submitting anyway")
 
             # ── 12. Click BUY ─────────────────────────────────────────────────
@@ -489,16 +519,17 @@ async def checkout_full_ui(
             if not result['success'] and not result['error']:
                 result['error'] = f'No epay. URL={page.url}'
 
-        except Exception as e:
+    except Exception as e:
             logger.error(f"Checkout error: {e}")
             result['error'] = str(e)
-        finally:
+    finally:
             try:
                 await page.screenshot(path='/tmp/pw_checkout_final.png')
             except Exception:
                 pass
-            await browser.close()
+            await ctx.close()
 
+    result['turnstile_solved'] = result.get('success', False)
     return result
 
 
