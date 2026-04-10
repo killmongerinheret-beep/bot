@@ -7,6 +7,7 @@ from .views import (
     list_telegram_groups, approve_telegram_group, reject_telegram_group, suspend_telegram_group,
     register_user, login_user, logout_user, verify_session,
     list_held_slots, release_held_slot, checkout_redirect, generate_realtime_epay, generate_test_profiles,
+    mark_slot_paid,
 )
 from .admin_views import (
     AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet
@@ -46,6 +47,7 @@ urlpatterns = [
     path('holds/', list_held_slots, name='list-held-slots'),
     path('holds/<int:hold_id>/release/', release_held_slot, name='release-held-slot'),
     path('holds/<int:hold_id>/checkout/', checkout_redirect, name='checkout-redirect'),
+    path('mark-paid/', mark_slot_paid, name='mark-slot-paid'),
     path('epay/generate/', generate_realtime_epay, name='generate-realtime-epay'),
     path('test/profiles/', generate_test_profiles, name='generate-test-profiles'),
     path('', include(router.urls)),

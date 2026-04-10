@@ -853,6 +853,12 @@ def list_held_slots(request):
 
     data = []
     for h in holds:
+        import json as _json
+        notes = {}
+        try:
+            notes = _json.loads(h.notes or '{}')
+        except Exception:
+            pass
         data.append({
             'id': h.id,
             'date': h.date,
@@ -864,8 +870,48 @@ def list_held_slots(request):
             'hold_duration_minutes': h.hold_duration_minutes(),
             'last_keepalive_at': h.last_keepalive_at.isoformat(),
             'hold_started_at': h.hold_started_at.isoformat(),
+            'notes': notes,
         })
-    return Response(data)
+    return Response({'results': data, 'count': len(data)})
+
+
+@api_view(['POST'])
+def mark_slot_paid(request):
+    """Mark a held slot as paid — called by local browser agent after successful booking."""
+    from .models import HeldSlot
+    from .notification_utils import send_telegram_signal
+    from .models import TelegramGroup
+
+    hold_id = request.data.get('hold_id')
+    reference = request.data.get('reference', '')
+    epay_url = request.data.get('epay_url', '')
+
+    if not hold_id:
+        return Response({'error': 'hold_id required'}, status=400)
+
+    try:
+        held = HeldSlot.objects.get(id=hold_id)
+    except HeldSlot.DoesNotExist:
+        return Response({'error': 'Hold not found'}, status=404)
+
+    held.status = 'paid'
+    held.payment_url = epay_url
+    held.save(update_fields=['status', 'payment_url'])
+
+    # Notify all groups
+    msg = (
+        f"✅ *Ticket Booked!*\n\n"
+        f"📅 {held.date} {held.slot_time}\n"
+        f"👥 {held.visitors} visitors | €{held.total_price}\n"
+        f"🔖 Ref: `{reference}`"
+    )
+    groups = TelegramGroup.objects.filter(
+        agency=held.task.agency, status='approved', notification_enabled=True
+    )
+    for g in groups:
+        send_telegram_signal(g.chat_id, msg)
+
+    return Response({'success': True, 'hold_id': hold_id, 'reference': reference})
 
 
 @api_view(['POST'])
