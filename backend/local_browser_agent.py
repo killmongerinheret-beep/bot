@@ -116,6 +116,17 @@ def get_trigger_group():
     except Exception:
         pass
     return TRIGGER_GROUP_CHAT_ID
+
+
+def get_pending_slots():
+    """Poll the server for held slots that need browser checkout."""
+    try:
+        r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=8)
+        if r.status_code == 200:
+            return r.json().get('results', [])
+    except Exception:
+        pass
+    return []
     """Poll the server for held slots that need browser checkout."""
     try:
         r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=8)
