@@ -1083,7 +1083,8 @@ async def do_create_monitor(query, context):
                                 if sl.get('availability') not in ('SOLD_OUT','NOT_ALLOWED'):
                                     if not preferred_times or sl.get('time') in preferred_times:
                                         logger.info(f"Snipe task #{task.id}: slot already available! {d_api} {sl['time']} — triggering immediately")
-                                        await sync_to_async(sweep_notify_slot.delay)(
+                                        # Call directly (not via Celery) for instant response
+                                        await sync_to_async(sweep_notify_slot)(
                                             date=d_api, slot_id=str(sl['id']), slot_time=sl['time']
                                         )
                                         break
