@@ -659,6 +659,25 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith('pay_hold:'):
         hold_id = int(data.split(':')[1])
         await do_pay_hold(query, context, hold_id)
+
+    # ── Open Browser (local agent) ──
+    if data.startswith('open_browser:') or data.startswith('open_browser_slot:'):
+        from django.core.cache import cache
+        import time as _time
+        user = query.from_user
+        # Store in cache so local agent can poll it
+        request_id = f"browser_req:{int(_time.time())}"
+        cache.set(request_id, {
+            'callback_data': data,
+            'user': user.first_name if user else 'Someone',
+            'timestamp': int(_time.time()),
+        }, timeout=300)  # 5 min to pick up
+        # Also push to a list so agent can poll
+        pending = cache.get('browser_pending', [])
+        pending.append({'id': request_id, 'data': data, 'user': user.first_name if user else 'Someone'})
+        cache.set('browser_pending', pending, timeout=300)
+        await query.answer(f"Opening Chrome... check your machine!")
+        return
         return
 
     # ── Book flow ──

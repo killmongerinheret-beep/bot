@@ -924,6 +924,21 @@ def get_browser_trigger_group(request):
     return Response({'chat_id': None, 'title': None})
 
 
+@api_view(['GET'])
+def get_browser_pending(request):
+    """
+    Return pending browser open requests (button clicks from Telegram).
+    Local agent polls this every 5s and pops items to process.
+    """
+    from django.core.cache import cache
+    pending = cache.get('browser_pending', [])
+    if pending:
+        # Clear the list after returning
+        cache.delete('browser_pending')
+        return Response({'requests': pending})
+    return Response({'requests': []})
+
+
 @api_view(['POST'])
 def release_held_slot(request, hold_id):
     """Release a held slot."""
