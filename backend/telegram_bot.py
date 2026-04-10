@@ -1047,6 +1047,49 @@ async def do_create_monitor(query, context):
         except Exception as e:
             logger.warning(f"Could not trigger immediate check: {e}")
 
+        # For snipe tasks: also immediately check if slot is already available
+        if tier == 'snipe':
+            try:
+                from monitors.tasks_sweep import sweep_notify_slot
+                from monitors.epay_ssl import make_vatican_session
+                import requests as _req
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo
+
+                # Quick check for the target date/times
+                s = make_vatican_session(use_proxy=True)
+                H = {'Accept':'application/json','X-Requested-With':'XMLHttpRequest','Referer':'https://tickets.museivaticani.va/'}
+                d_fmt = date.replace('-', '/')
+                day, month, year = d_fmt.split('/')
+                d_api = f"{day}/{month}/{year}"
+
+                r = s.get('https://tickets.museivaticani.va/api/search/resultPerTag', params={
+                    'lang':'it','visitorNum':str(visitors),'visitDate':d_api,
+                    'area':'1','who':'','page':'0','tag':'MV-Biglietti'
+                }, headers=H, timeout=8)
+                if r.status_code == 200:
+                    ticket = next((v for v in r.json().get('visits',[])
+                                   if 'musei vaticani' in v.get('name','').lower()
+                                   and 'ingresso' in v.get('name','').lower()
+                                   and v.get('availability') in ('AVAILABLE','LOW_AVAILABILITY')), None)
+                    if ticket:
+                        tid = ticket['id']
+                        r2 = s.get('https://tickets.museivaticani.va/api/visit/timeavail', params={
+                            'lang':'it','visitLang':'','visitTypeId':str(tid),
+                            'visitorNum':str(visitors),'visitDate':d_api,
+                        }, headers=H, timeout=8)
+                        if r2.status_code == 200:
+                            for sl in r2.json().get('timetable',[]):
+                                if sl.get('availability') not in ('SOLD_OUT','NOT_ALLOWED'):
+                                    if not preferred_times or sl.get('time') in preferred_times:
+                                        logger.info(f"Snipe task #{task.id}: slot already available! {d_api} {sl['time']} — triggering immediately")
+                                        await sync_to_async(sweep_notify_slot.delay)(
+                                            date=d_api, slot_id=str(sl['id']), slot_time=sl['time']
+                                        )
+                                        break
+            except Exception as e:
+                logger.warning(f"Immediate snipe check failed: {e}")
+
         ud['step'] = None
         tier = ud.get('tier', 'notify')
         extra = ''

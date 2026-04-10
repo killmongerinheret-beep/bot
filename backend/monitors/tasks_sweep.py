@@ -242,6 +242,22 @@ def sweep_notify_slot(date, slot_id, slot_time):
                         notes=__import__('json').dumps({'serverid': s.cookies.get('SERVERID',''), 'participants': __import__('json').loads(task.participants_json or '[]')})
                     )
                     logger.info(f"  HeldSlot #{held.id} created")
+
+                    # Push to browser_pending so local agent opens Chrome AUTOMATICALLY
+                    # No button click needed — agent opens browser immediately
+                    import base64 as _b64
+                    slot_info = _b64.b64encode(
+                        f"{date}|{slot_time}|{slot_id}|{task.visitors}|{total}".encode()
+                    ).decode()
+                    from django.core.cache import cache as _cache
+                    pending = _cache.get('browser_pending', [])
+                    pending.append({
+                        'data': f'open_browser:{held.id}:{slot_info}',
+                        'user': f'Auto-snipe task #{task.id}',
+                        'auto': True,  # flag: no button click needed
+                    })
+                    _cache.set('browser_pending', pending, timeout=300)
+                    logger.info(f"  📲 Browser open queued for agent")
                 else:
                     logger.warning(f"  Recap failed: {rr.status_code} {rr.text[:100]}")
             except Exception as e:

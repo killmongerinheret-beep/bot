@@ -628,14 +628,14 @@ async def main():
                     notify_slot_with_button(slot)
                     logger.info(f"New slot notified: {slot.get('date')} {slot.get('slot_time')}")
 
-            # ── Check for button clicks (polled from server cache) ────────────
-            # Main bot handles Telegram callbacks and stores them in server cache
-            # Local agent polls /api/v1/browser-pending/ every cycle
+            # ── Check for browser open requests (auto + button clicks) ─────────
             pending_reqs = get_telegram_updates()
             for req in pending_reqs:
                 data = req.get('data', '')
-                user_name = req.get('user', 'Someone')
-                logger.info(f"📥 Browser request: {data[:50]} from {user_name}")
+                user_name = req.get('user', 'Auto')
+                is_auto = req.get('auto', False)
+
+                logger.info(f"📥 {'Auto' if is_auto else 'Button'} browser request from {user_name}")
 
                 if data.startswith('open_browser:'):
                     parts = data.split(':')
