@@ -665,18 +665,31 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from django.core.cache import cache
         import time as _time
         user = query.from_user
+        user_name = user.first_name if user else 'Someone'
+
+        # Deduplicate — ignore if same data was clicked in last 30s
+        dedup_key = f"browser_click_dedup:{data[:50]}"
+        if cache.get(dedup_key):
+            await query.answer("Already processing — Chrome is opening!")
+            return
+        cache.set(dedup_key, True, timeout=30)
+
         # Store in cache so local agent can poll it
-        request_id = f"browser_req:{int(_time.time())}"
-        cache.set(request_id, {
-            'callback_data': data,
-            'user': user.first_name if user else 'Someone',
-            'timestamp': int(_time.time()),
-        }, timeout=300)  # 5 min to pick up
-        # Also push to a list so agent can poll
         pending = cache.get('browser_pending', [])
-        pending.append({'id': request_id, 'data': data, 'user': user.first_name if user else 'Someone'})
+        pending.append({'data': data, 'user': user_name})
         cache.set('browser_pending', pending, timeout=300)
-        await query.answer(f"Opening Chrome... check your machine!")
+
+        # Edit the message to show it was clicked (prevents double-click)
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"✅ Clicked by {user_name}", callback_data='noop')
+                ]])
+            )
+        except Exception:
+            pass
+
+        await query.answer(f"Opening Chrome on the agent machine...")
         return
         return
 

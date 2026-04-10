@@ -227,13 +227,18 @@ def sweep_notify_slot(date, slot_id, slot_time):
 
             if held:
                 # Snipe task created a hold — button opens browser for this specific hold
+                # Embed slot info in callback so agent doesn't need to fetch it
+                import base64 as _b64
+                slot_info = _b64.b64encode(
+                    f"{held.date}|{held.slot_time}|{held.slot_id}|{held.visitors}|{held.total_price}".encode()
+                ).decode()
                 msg = (
                     f"🎫 *Slot Locked — Book Now!*\n\n"
                     f"📅 {date} {slot_time}\n"
                     f"👥 {held.visitors} visitors | €{held.total_price}\n\n"
                     f"Click to open Chrome on your machine:"
                 )
-                button_data = f'open_browser:{held.id}'
+                button_data = f'open_browser:{held.id}:{slot_info}'
             else:
                 # Notify-only task — no hold, but still send button to open browser
                 # Browser agent will do the full flow (search → recap → checkout)

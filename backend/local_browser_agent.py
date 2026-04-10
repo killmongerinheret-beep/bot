@@ -525,6 +525,7 @@ async def main():
 
     # pending_browser: hold_id → slot dict (waiting for button click)
     pending_browser = {}
+    processing_holds = set()  # prevent duplicate browser opens
 
     while True:
         try:
@@ -549,36 +550,66 @@ async def main():
                 logger.info(f"📥 Browser request: {data[:50]} from {user_name}")
 
                 if data.startswith('open_browser:'):
-                    hold_id = data.split(':')[1]
+                    parts = data.split(':')
+                    hold_id = parts[1]
+
+                    # Deduplicate
+                    if hold_id in processing_holds:
+                        logger.debug(f"Hold #{hold_id} already processing — skip")
+                        continue
+                    processing_holds.add(hold_id)
                     slot = pending_browser.get(hold_id)
 
-                    if not slot:
+                    # Try to decode embedded slot info (format: open_browser:{id}:{base64})
+                    if not slot and len(parts) >= 3:
                         try:
-                            r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=5)
-                            if r.status_code == 200:
-                                all_slots = r.json().get('results', [])
-                                slot = next((s for s in all_slots if str(s.get('id')) == hold_id), None)
-                        except Exception:
-                            pass
+                            import base64
+                            slot_info = base64.b64decode(parts[2]).decode()
+                            s_parts = slot_info.split('|')
+                            slot = {
+                                'id': hold_id,
+                                'date': s_parts[0],
+                                'slot_time': s_parts[1],
+                                'slot_id': s_parts[2] if len(s_parts) > 2 else '',
+                                'visitors': int(s_parts[3]) if len(s_parts) > 3 else 1,
+                                'total_price': s_parts[4] if len(s_parts) > 4 else '?',
+                            }
+                            logger.info(f"  Decoded slot: {slot['date']} {slot['slot_time']}")
+                        except Exception as e:
+                            logger.warning(f"  Could not decode slot info: {e}")
 
-                    if slot:
-                        send_telegram(TRIGGER_GROUP_CHAT_ID,
-                            f"🌐 *{user_name}* clicked Open Browser\nChrome opening for {slot.get('date')} {slot.get('slot_time')}...")
-                        logger.info(f"Opening Chrome for hold #{hold_id}")
-                        asyncio.create_task(open_checkout(slot))
-                    else:
-                        logger.warning(f"Hold #{hold_id} not found")
-                        send_telegram(TRIGGER_GROUP_CHAT_ID, f"⚠️ Hold #{hold_id} not found")
+                    if not slot:
+                        # Last resort: build minimal slot and let agent do full flow
+                        slot = {'id': hold_id, 'date': None, 'slot_time': None,
+                                'visitors': 1, 'total_price': '?'}
+                        logger.warning(f"  Using minimal slot for hold #{hold_id}")
+
+                    send_telegram(TRIGGER_GROUP_CHAT_ID,
+                        f"🌐 *{user_name}* clicked Open Browser\n"
+                        f"Chrome opening for {slot.get('date','?')} {slot.get('slot_time','?')}...")
+                    logger.info(f"Opening Chrome for hold #{hold_id} — {slot.get('date')} {slot.get('slot_time')}")
+                    asyncio.create_task(open_checkout(slot))
 
                 elif data.startswith('open_browser_slot:'):
                     import base64
+                    # Deduplicate by slot data
+                    slot_key = data[:60]
+                    if slot_key in processing_holds:
+                        logger.debug(f"Slot already processing — skip")
+                        continue
+                    processing_holds.add(slot_key)
                     try:
                         slot_info = base64.b64decode(data.split(':', 1)[1]).decode()
-                        date_str, slot_time_str, slot_id_str = slot_info.split('|')
+                        s_parts = slot_info.split('|')
+                        date_str = s_parts[0]
+                        slot_time_str = s_parts[1]
+                        slot_id_str = s_parts[2] if len(s_parts) > 2 else ''
+                        visitors_n = int(s_parts[3]) if len(s_parts) > 3 else 1
+                        total_str = s_parts[4] if len(s_parts) > 4 else '?'
                         slot = {
                             'date': date_str, 'slot_time': slot_time_str,
-                            'slot_id': slot_id_str, 'visitors': 1,
-                            'total_price': '?', 'id': None,
+                            'slot_id': slot_id_str, 'visitors': visitors_n,
+                            'total_price': total_str, 'id': None,
                         }
                         send_telegram(TRIGGER_GROUP_CHAT_ID,
                             f"🌐 *{user_name}* clicked Open Browser\n"
