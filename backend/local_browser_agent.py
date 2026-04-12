@@ -65,7 +65,7 @@ PROFILE = {
 CHROME_PATH = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
 # Use a persistent Chrome profile for the agent to bypass Cloudflare
 CHROME_PROFILE = r"d:\bot\vatican_chrome_profile"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36"
 last_update_id = 0      # Telegram update offset
 processed_slots = set() # track slots already notified
 
@@ -253,7 +253,12 @@ async def open_checkout(slot: dict):
             '--no-first-run',
             '--no-default-browser-check',
             '--start-maximized',
+            # Anti-detection & Realism flags
             '--disable-blink-features=AutomationControlled',
+            '--ignore-gpu-blocklist',
+            '--enable-webgl',
+            '--enable-accelerated-2d-canvas',
+            '--disable-features=IsolateOrigins,site-per-process',
             f'--user-agent={USER_AGENT}',
             'about:blank' if not is_setup else 'https://google.com',
         ]
@@ -270,7 +275,42 @@ async def open_checkout(slot: dict):
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             page = await ctx.new_page()
             await Stealth().apply_stealth_async(page)
-            logger.info(f"  Connected to real Chrome via CDP with Stealth")
+            
+            # Active Human-Like Turnstile Auto-Solver
+            stop_watchdog = False
+            async def solve_turnstile():
+                try:
+                    for frame in page.frames:
+                        if "challenges.cloudflare.com" in frame.url:
+                            cb = await frame.query_selector('input[type="checkbox"]')
+                            if cb and await cb.is_visible():
+                                is_checked = await cb.is_checked()
+                                if is_checked: return False
+
+                                logger.info("   [AUTO-SOLVE] Turnstile found! Simulating human click...")
+                                box = await cb.bounding_box()
+                                if not box: return False
+                                
+                                await page.mouse.move(
+                                    box['x'] + box['width'] / 2,
+                                    box['y'] + box['height'] / 2,
+                                    steps=20
+                                )
+                                await asyncio.sleep(0.4)
+                                await cb.click(force=True)
+                                await asyncio.sleep(2)
+                                return True
+                except Exception: pass
+                return False
+
+            async def turnstile_watchdog():
+                while not stop_watchdog:
+                    await solve_turnstile()
+                    await asyncio.sleep(10)
+            
+            watchdog_task = asyncio.create_task(turnstile_watchdog())
+            
+            logger.info(f"  Connected to real Chrome via CDP with Stealth + Human-Like Solver")
             
             if is_setup:
                 logger.info("Manual Setup Mode active. Please sign in and establish trusted session.")
@@ -281,14 +321,25 @@ async def open_checkout(slot: dict):
             # Fallback to Playwright Chromium
             browser = await p.chromium.launch(
                 headless=False,
-                args=['--no-sandbox', '--disable-blink-features=AutomationControlled',
-                      '--start-maximized']
+                executable_path=CHROME_PATH,
+                args=['--no-sandbox', 
+                      '--disable-blink-features=AutomationControlled',
+                      '--start-maximized',
+                      '--no-first-run',
+                      '--no-default-browser-check']
             )
-            ctx = await browser.new_context(
-                locale='it-IT', timezone_id='Europe/Rome',
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                viewport={'width': 1280, 'height': 900},
-            )
+            # Use existing context to maintain profile session effectively
+            if not browser.contexts:
+                ctx = await browser.new_context(
+                    locale='it-IT', timezone_id='Europe/Rome',
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36',
+                    ignore_https_errors=True
+                )
+            else:
+                ctx = browser.contexts[0]
+
+            # Ensure we don't hardcode viewport to avoid detection of synthetic size
+            page = await ctx.new_page()
             await ctx.add_init_script(
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
                 "window.chrome={runtime:{},loadTimes:function(){},csi:function(){},app:{isInstalled:false}};"
@@ -482,6 +533,7 @@ async def open_checkout(slot: dict):
                         fetch('/api/visit/recap', {{
                             method: 'POST',
                             headers: {{ 'Content-Type': 'application/json' }},
+                            credentials: 'include',
                             body: JSON.stringify({{
                                 visitId: slot_id,
                                 visitTypeId: parseInt(ticket_id),
@@ -491,8 +543,12 @@ async def open_checkout(slot: dict):
                                     {{ id: 60, name: 'Biglietto Intero', price: 20, quantity: adult_count.toString() }},
                                     {{ id: 61, name: 'Biglietto Ridotto', price: 10, quantity: child_count.toString() }}
                                 ],
-                                additionalCosts: {{}},
-                                services: []
+                                additionalCosts: {{
+                                    'service-0': {{ id: 58, name: 'Diritti di Prevendita', price: 5, quantity: parseInt(visitors) }}
+                                }},
+                                services: [
+                                    {{ id: 58, name: 'Diritti di Prevendita', price: 5, quantity: parseInt(visitors) }}
+                                ]
                             }})
                         }}).then(r => console.log('💓 Heartbeat status:', r.status));
                     }}, 240000); // 4 minutes

@@ -34,7 +34,7 @@ HEARTBEAT_INTERVAL_MS = 300000  # 5 minutes
 TARGET_TICKET_NAME = "Musei Vaticani - Biglietti d'ingresso"
 PREFERRED_TEST_DATE = "04/05/2026"
 PERSISTENT_PROFILE_PATH = r"d:\bot\vatican_chrome_profile"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36"
 # 
 
 async def find_available_slot():
@@ -210,7 +210,12 @@ async def run_hold_challenge(slot_info):
             '--no-first-run',
             '--no-default-browser-check',
             '--start-maximized',
+            # Anti-detection & Realism flags
             '--disable-blink-features=AutomationControlled',
+            '--ignore-gpu-blocklist',
+            '--enable-webgl',
+            '--enable-accelerated-2d-canvas',
+            '--disable-features=IsolateOrigins,site-per-process',
             f'--user-agent={USER_AGENT}',
             'about:blank' if not is_setup else 'https://google.com',
         ] + proxy_args
@@ -221,7 +226,15 @@ async def run_hold_challenge(slot_info):
 
         try:
             browser = await p.chromium.connect_over_cdp(f'http://localhost:{debug_port}')
-            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+            # Respect the existing context from the profile, but set locale/UA if needed
+            if not browser.contexts:
+                ctx = await browser.new_context(
+                    locale='it-IT', timezone_id='Europe/Rome',
+                    user_agent=USER_AGENT,
+                    ignore_https_errors=True
+                )
+            else:
+                ctx = browser.contexts[0]
 
             page = await ctx.new_page()
             await Stealth().apply_stealth_async(page)
@@ -232,14 +245,31 @@ async def run_hold_challenge(slot_info):
                 print("Once done, close Chrome or press Ctrl+C to end setup.")
                 while True: await asyncio.sleep(60)
 
-            # Pipe browser console logs to python stdout so user sees the heartbeat
-            page.on("console", lambda msg: print(f"  [BROWSER] {msg.text}"))
+            # Filter noisy garbage from Cloudflare/Vatican internal scripts
+            def console_filter(msg):
+                txt = msg.text
+                # Suppress known junk patterns
+                junk = ["Private Access Token", "401", "xr-spatial-tracking", "600010", 
+                        "NaN", "font-size:0", "JSHandle", "/.*.*=.*/", "native code", "cmg/1", "preload"]
+                if any(x in txt for x in junk):
+                    return
+                # Ignore very short or purely technical/regex-looking messages
+                if len(txt) < 5 or txt.startswith("/") or "function" in txt:
+                    return
+                print(f"  [BROWSER] {txt}")
+
+            page.on("console", console_filter)
             
         except Exception as e:
             print(f" CDP failed: {e}. Falling back to standard browser...")
-            browser = await p.chromium.launch(headless=False)
-            ctx = await browser.new_context()
+            browser = await p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
+            ctx = await browser.new_context(
+                    locale='it-IT', timezone_id='Europe/Rome',
+                    user_agent=USER_AGENT,
+                    ignore_https_errors=True
+                )
             page = await ctx.new_page()
+            await Stealth().apply_stealth_async(page)
 
         # Build Entry URL - matching recording style
         from zoneinfo import ZoneInfo
@@ -250,8 +280,30 @@ async def run_hold_challenge(slot_info):
         # Recording uses /home/visit/{visitors}/{timestamp}/1
         entry_url = f"{VATICAN_BASE}/home/visit/{slot_info['visitors']}/{ts}/1"
         
+        # Turnstile auto-solve: just wait for the token to appear
+        # Managed Turnstile solves itself in real Chrome — no clicking needed
+        # The watchdog just monitors and reports
+        stop_watchdog = False
+        async def turnstile_watchdog():
+            while not stop_watchdog:
+                try:
+                    # Check if Turnstile token is already solved
+                    token = await page.evaluate("""
+                        () => {
+                            const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                            return inp ? inp.value : '';
+                        }
+                    """)
+                    if token and len(token) > 100:
+                        print(f"   [TURNSTILE] ✅ Auto-solved! Token prefix: {token[:4]}")
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
+
+        watchdog_task = asyncio.create_task(turnstile_watchdog())
+
         print(f" [1] Navigating to: {entry_url}")
-        await page.goto(entry_url, wait_until='networkidle', timeout=30000)
+        await page.goto(entry_url, wait_until='domcontentloaded', timeout=30000)
         await page.wait_for_timeout(3000)
 
         #  Step 1: Get actual ticket_id via API (Agent Logic) 
@@ -291,50 +343,39 @@ async def run_hold_challenge(slot_info):
             print(f" bookTicket click failed: {e}")
 
         #  Step 3: Set quantity 
-        print(f" [4] Setting quantity to {ADULTS} Adults and {CHILDREN} Children...")
+        print(f" [4] Setting quantity to {ADULTS} Adults...")
         try:
-            await page.wait_for_selector("app-ticket-price-list", timeout=10000)
-            # Find the actual rows containing 'intero' or 'ridotto'
-            rows = await page.query_selector_all("app-ticket-price-list > div > div > div")
-            for row in rows:
-                text = (await row.inner_text()).lower()
-                
-                # Check if this div is actually a row by checking if it has a quantity button
-                dropdown = await row.query_selector("[data-cy='ticketQuantity']")
-                if not dropdown:
-                    continue
-
-                target_qty = 0
-                label = ""
-                
-                if "intero" in text:
-                    target_qty = ADULTS
-                    label = "Adult (Intero)"
-                elif "ridotto" in text:
-                    target_qty = CHILDREN
-                    label = "Child (Ridotto)"
-                
-                if target_qty > 0:
-                    print(f"  Setting {label} to {target_qty}...")
-                    await dropdown.click(force=True)
-                    await page.wait_for_timeout(700)
-                    
-                    # Search for the options INSIDE this specific dropdown
-                    options = await row.query_selector_all("app-dropdown section [data-cy='ticketQuantitySection']")
-                    found = False
-                    for opt in options:
-                        if await opt.is_visible():
-                            opt_text = (await opt.inner_text()).strip()
-                            if opt_text == str(target_qty):
-                                await opt.click(force=True)
-                                found = True
-                                print(f"     Selected {target_qty}")
-                                break
-                                
-                    if not found:
-                        print(f"     Quantity {target_qty} not found in visible dropdown options for {label}!")
-                        
-                    await page.wait_for_timeout(500)
+            await page.wait_for_selector("[data-cy='ticketQuantity']", timeout=10000)
+            
+            # From recording: open → click first div (reset) → open again → click ticketQuantitySection span
+            qty = await page.query_selector("[data-cy='ticketQuantity']")
+            if qty: await qty.click(); await page.wait_for_timeout(500)
+            
+            # Click first div in section (resets)
+            await page.evaluate("""
+                () => {
+                    const sec = document.querySelector("div.ng-touched section > div:nth-of-type(1)");
+                    if (sec) sec.click();
+                }
+            """)
+            await page.wait_for_timeout(300)
+            
+            # Open again
+            qty2 = await page.query_selector("[data-cy='ticketQuantity']")
+            if qty2: await qty2.click(); await page.wait_for_timeout(500)
+            
+            # Click the ticketQuantitySection span (= target quantity)
+            clicked = await page.evaluate("""
+                () => {
+                    const span = document.querySelector("[data-cy='ticketQuantitySection'] > span");
+                    if (span) { span.click(); return span.innerText.trim(); }
+                    const sec = document.querySelector("[data-cy='ticketQuantitySection']");
+                    if (sec) { sec.click(); return sec.innerText.trim(); }
+                    return null;
+                }
+            """)
+            print(f"   Quantity selected: {clicked}")
+            await page.wait_for_timeout(400)
         except Exception as e:
             print(f" Quantity selection failed: {e}")
 
@@ -425,6 +466,7 @@ async def run_hold_challenge(slot_info):
                         fetch('/api/visit/recap', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
                             body: JSON.stringify({
                                 visitId: slot_id,
                                 visitTypeId: parseInt(ticket_id),
@@ -434,13 +476,21 @@ async def run_hold_challenge(slot_info):
                                     { id: 60, name: 'Biglietto Intero', price: 20, quantity: adult_count.toString() },
                                     { id: 61, name: 'Biglietto Ridotto', price: 10, quantity: child_count.toString() }
                                 ],
-                                additionalCosts: {},
-                                services: []
+                                additionalCosts: {
+                                    'service-0': { id: 58, name: 'Diritti di Prevendita', price: 5, quantity: parseInt(visitors) }
+                                },
+                                services: [
+                                    { id: 58, name: 'Diritti di Prevendita', price: 5, quantity: parseInt(visitors) }
+                                ]
                             })
                         }).then(r => {
                             const t = new Date().toLocaleTimeString();
-                            console.log(' Heartbeat status:', r.status, 'at', t);
-                        }).catch(e => console.log(' Heartbeat error:', e));
+                            if (r.status === 200) {
+                                console.log('✅ Heartbeat OK at', t);
+                            } else {
+                                console.log('⚠️ Heartbeat ALERT:', r.status, 'at', t);
+                            }
+                        }).catch(e => console.log('❌ Heartbeat error:', e));
                     }, 240000); // 4 minutes
 
                     // Ensure boxes stay checked every 30s
@@ -469,19 +519,33 @@ async def run_hold_challenge(slot_info):
                 'child_count': child_count
             })
             
-            # Keep open
+            # Keep hold alive and show clear progress
+            print("\n" + "🚀" * 20)
+            print(" SESSION LOCKED! DO NOT CLOSE THE BROWSER.")
+            print("🚀" * 20 + "\n")
+            
             while True:
-                await asyncio.sleep(60)
                 elapsed = (time.time() - start_time) / 60
+                sys.stdout.write(f"\r  🕒 HOLD ACTIVE: {elapsed:.1f}/70 mins passed... ")
+                sys.stdout.flush()
+                await asyncio.sleep(10)
                 if elapsed >= 70:
-                    print(f"70 MINUTES PASSED! You can now solve the captcha and click BUY.")
-                else:
-                    print(f"  Hold active... {elapsed:.1f}/70 mins passed", end="\r")
-
+                     print(f"\n\n🔥 70 MINUTES REACHED! 🔥")
+                     print("You can now solve the captcha on the screen and click BUY.")
+        
         except Exception as e:
             print(f"Script failed to reach/fill checkout: {e}")
             print("You might need to finish selection manually, but the script will wait.")
             while True: await asyncio.sleep(60)
+        finally:
+            # Clean shutdown
+            print("\nShutting down watchdog and browser...")
+            try: 
+                stop_watchdog = True
+                if 'watchdog_task' in locals(): watchdog_task.cancel()
+            except: pass
+            try: subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe', '/T'], capture_output=True)
+            except: pass
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
