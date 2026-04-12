@@ -131,73 +131,11 @@ async def run_hold_challenge(slot_info):
         
         from dotenv import load_dotenv
         load_dotenv(os.path.join(root_dir, '.env'))
-        oxy_username = os.environ.get('OXYLABS_USERNAME')
-        oxy_password = os.environ.get('OXYLABS_PASSWORD')
 
-        @sync_to_async
-        def get_proxy():
-            from monitors.models import Proxy
-            return Proxy.objects.filter(is_active=True).order_by('?').first()
-
-        proxy = await get_proxy()
+        # NO PROXY for browser — Vatican Cloudflare trusts your real IP more than proxy IPs
+        # Proxies change fingerprint and lower Cloudflare trust score
         proxy_args = []
-        if proxy:
-            print(f" Using proxy: {proxy.ip_port}")
-            p_user = oxy_username if oxy_username else proxy.username
-            p_pass = oxy_password if oxy_password else proxy.password
-            
-            if p_user and p_pass:
-                # Generate a dynamic proxy-auth extension for Chrome
-                proxy_plugin_dir = os.path.join(tempfile.gettempdir(), 'vatican_proxy_auth_plugin')
-                os.makedirs(proxy_plugin_dir, exist_ok=True)
-                
-                manifest_json = """
-                {
-                    "version": "1.0.0",
-                    "manifest_version": 2,
-                    "name": "Chrome Proxy",
-                    "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
-                    "background": {"scripts": ["background.js"]},
-                    "minimum_chrome_version": "22.0.0"
-                }
-                """
-                
-                background_js = f"""
-                var config = {{
-                        mode: "fixed_servers",
-                        rules: {{
-                        singleProxy: {{
-                            scheme: "http",
-                            host: "{proxy.ip_port.split(':')[0]}",
-                            port: parseInt({proxy.ip_port.split(':')[1]})
-                        }},
-                        bypassList: ["localhost"]
-                        }}
-                    }};
-                chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-                function callbackFn(details) {{
-                    return {{
-                        authCredentials: {{
-                            username: "{p_user}",
-                            password: "{p_pass}"
-                        }}
-                    }};
-                }}
-                chrome.webRequest.onAuthRequired.addListener(
-                    callbackFn,
-                    {{urls: ["<all_urls>"]}},
-                    ['blocking']
-                );
-                """
-                with open(os.path.join(proxy_plugin_dir, "manifest.json"), "w") as f:
-                    f.write(manifest_json)
-                with open(os.path.join(proxy_plugin_dir, "background.js"), "w") as f:
-                    f.write(background_js)
-                    
-                proxy_args = [f'--load-extension={proxy_plugin_dir}']
-                print(" Generated proxy auth extension to bypass Chrome popup")
-            else:
-                proxy_args = [f'--proxy-server=http://{proxy.ip_port}']
+        print(" No proxy for browser (better Cloudflare trust with real IP)")
 
         print(" Launching real Chrome via CDP to bypass Cloudflare...")
         debug_port = 9222
@@ -210,15 +148,14 @@ async def run_hold_challenge(slot_info):
             '--no-first-run',
             '--no-default-browser-check',
             '--start-maximized',
-            # Anti-detection & Realism flags
             '--disable-blink-features=AutomationControlled',
             '--ignore-gpu-blocklist',
             '--enable-webgl',
             '--enable-accelerated-2d-canvas',
             '--disable-features=IsolateOrigins,site-per-process',
             f'--user-agent={USER_AGENT}',
-            'about:blank' if not is_setup else 'https://google.com',
-        ] + proxy_args
+            'about:blank',
+        ]
         
         chrome_proc = subprocess.Popen(chrome_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
