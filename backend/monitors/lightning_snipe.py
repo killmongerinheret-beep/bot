@@ -25,6 +25,7 @@ import time
 import json
 import os
 import secrets as _secrets
+from celery import shared_task
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,8 @@ BASE = 'https://tickets.museivaticani.va'
 H = {
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-    'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'sec-ch-ua': '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"',
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': '"Windows"',
     'sec-fetch-dest': 'empty',
@@ -81,10 +82,15 @@ def lightning_snipe(task, date: str, slot_id: str, slot_time: str,
 
     s = make_vatican_session()
 
+    # Quantities
+    adult_count = getattr(task, 'adult_count', visitors)
+    child_count = getattr(task, 'child_count', 0)
+    total_visitors = adult_count + child_count
+
     # ── 1. Search → fresh ticket_id + JSESSIONID ──────────────────────────────
     try:
         r = s.get(f'{BASE}/api/search/resultPerTag', params={
-            'lang': 'it', 'visitorNum': str(visitors), 'visitDate': date,
+            'lang': 'it', 'visitorNum': str(total_visitors), 'visitDate': date,
             'area': '1', 'who': '', 'page': '0', 'tag': 'MV-Biglietti'
         }, headers=H_XHR, timeout=8)
         if r.status_code != 200:
@@ -143,22 +149,21 @@ def lightning_snipe(task, date: str, slot_id: str, slot_time: str,
         if not sid:
             continue
 
-        # CONFIRMED from websocket.har: always use service 58 in recap
-        # regardless of what /api/visit/services returns
+        # Fixed quantity mapping
         body = {
             "visitId": sid,
             "visitTypeId": int(tid),
-            "visitorNum": int(visitors),
+            "visitorNum": int(total_visitors),
             "lang": "it",
             "tickets": [
-                {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(visitors)},
-                {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+                {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(adult_count)},
+                {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(child_count)},
             ],
             "additionalCosts": {
-                "service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}
+                "service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(total_visitors)}
             },
             "services": [
-                {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}
+                {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(total_visitors)}
             ]
         }
 
@@ -205,21 +210,29 @@ def lightning_snipe(task, date: str, slot_id: str, slot_time: str,
         except Exception:
             pass
 
-    if task_participants:
-        participant_list = []
-        for i, p in enumerate(task_participants[:visitors]):
+    # Correct mapping for mixed quantities
+    participant_list = []
+    task_p_idx = 0
+    
+    # 1. Fill Adults (Intero)
+    for _ in range(adult_count):
+        first, last = " ", " "
+        if task_p_idx < len(task_participants):
+            p = task_participants[task_p_idx]
             first = (p.get('first_name') or p.get('name') or '').strip() or profile.first_name
             last = (p.get('last_name') or p.get('surname') or '').strip() or profile.last_name
-            participant_list.append({"surname": last, "name": first, "id": 60, "ticketType": "intero", "services": [58]})
-        # pad if needed
-        while len(participant_list) < visitors:
-            participant_list.append({"surname": profile.last_name, "name": profile.first_name, "id": 60, "ticketType": "intero", "services": [58]})
-    else:
-        # Vatican accepts spaces — no names required at reservation time
-        participant_list = [
-            {"surname": " ", "name": " ", "id": 60, "ticketType": "intero", "services": [58]}
-            for _ in range(visitors)
-        ]
+            task_p_idx += 1
+        participant_list.append({"surname": last, "name": first, "id": 60, "ticketType": "intero", "services": [58]})
+        
+    # 2. Fill Children (Ridotto)
+    for _ in range(child_count):
+        first, last = " ", " "
+        if task_p_idx < len(task_participants):
+            p = task_participants[task_p_idx]
+            first = (p.get('first_name') or p.get('name') or '').strip() or profile.first_name
+            last = (p.get('last_name') or p.get('surname') or '').strip() or profile.last_name
+            task_p_idx += 1
+        participant_list.append({"surname": last, "name": first, "id": 61, "ticketType": "ridotto", "services": [58]})
 
     # ── 7. Reservation — API or Playwright ───────────────────────────────────
     epay_url = None
@@ -436,8 +449,8 @@ def keepalive_recap(held_slot_id: int) -> bool:
         "visitorNum": int(held.visitors),
         "lang": "it",
         "tickets": [
-            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(held.visitors)},
-            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(held.adult_count)},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(held.child_count)},
         ],
         "additionalCosts": {
             "service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(held.visitors)}
@@ -467,3 +480,27 @@ def keepalive_recap(held_slot_id: int) -> bool:
     except Exception as e:
         logger.error(f"Keepalive exception for Hold #{held_slot_id}: {e}")
         return False
+
+
+@shared_task(name='lightning_snipe_task')
+def lightning_snipe_task(held_slot_id: int):
+    """
+    Celery wrapper for lightning_snipe. 
+    Starts from an existing HeldSlot (recap'd but not reservation'd).
+    """
+    from .models import HeldSlot
+    try:
+        held = HeldSlot.objects.select_related('task__agency').get(id=held_slot_id)
+    except HeldSlot.DoesNotExist:
+        return {'success': False, 'error': 'Hold not found'}
+
+    # Trigger the snipe flow (reservation + Turnstile)
+    return lightning_snipe(
+        task=held.task,
+        date=held.date,
+        slot_id=held.slot_id,
+        slot_time=held.slot_time,
+        ticket_id=held.ticket_id,
+        ticket_name=held.ticket_name,
+        visitors=held.visitors
+    )

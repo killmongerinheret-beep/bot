@@ -366,6 +366,12 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
         return f"Failed: {str(e)}"
 
 
+@shared_task(name="instant_sniper_scan", queue="vatican")
+def instant_sniper_scan():
+    """High-frequency orchestrator alias for the sniper engine."""
+    return orchestrate_vatican_tasks_search_api()
+
+
 @shared_task(name="orchestrate_vatican_tasks_search_api", queue="vatican")
 def orchestrate_vatican_tasks_search_api():
     """

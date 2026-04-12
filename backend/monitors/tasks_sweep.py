@@ -213,8 +213,8 @@ def sweep_notify_slot(date, slot_id, slot_time):
                     "visitId": str(slot_id), "visitTypeId": int(tid),
                     "visitorNum": int(task.visitors), "lang": "it",
                     "tickets": [
-                        {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(task.visitors)},
-                        {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+                        {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(task.adult_count)},
+                        {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(task.child_count)},
                     ],
                     "additionalCosts": {"service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(task.visitors)}},
                     "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(task.visitors)}],
@@ -234,7 +234,10 @@ def sweep_notify_slot(date, slot_id, slot_time):
                     held = HeldSlot.objects.create(
                         task=task, date=date, slot_id=str(slot_id), slot_time=slot_time,
                         ticket_id=str(tid), ticket_name=task.ticket_name or "Musei Vaticani - Biglietti d'ingresso",
-                        visitors=task.visitors, total_price=total,
+                        visitors=task.visitors, 
+                        adult_count=task.adult_count,
+                        child_count=task.child_count,
+                        total_price=total,
                         jsessionid=s.cookies.get('JSESSIONID',''),
                         ticketmv=s.cookies.get('ticketmv',''),
                         recap_id=recap_id, status='held',
@@ -242,21 +245,29 @@ def sweep_notify_slot(date, slot_id, slot_time):
                     )
                     logger.info(f"  HeldSlot #{held.id} created")
 
-                    # Push to browser_pending so local agent opens Chrome AUTOMATICALLY
-                    # No button click needed — agent opens browser immediately
-                    import base64 as _b64
-                    slot_info = _b64.b64encode(
-                        f"{date}|{slot_time}|{slot_id}|{task.visitors}|{total}".encode()
-                    ).decode()
-                    from django.core.cache import cache as _cache
-                    pending = _cache.get('browser_pending', [])
-                    pending.append({
-                        'data': f'open_browser:{held.id}:{slot_info}',
-                        'user': f'Auto-snipe task #{task.id}',
-                        'auto': True,  # flag: no button click needed
-                    })
-                    _cache.set('browser_pending', pending, timeout=300)
-                    logger.info(f"  📲 Browser open queued for agent")
+                    # ACTION: Choose checkout method
+                    checkout_method = getattr(task, 'checkout_method', 'api')
+                    
+                    if checkout_method == 'api':
+                        # Trigger FAST API SNIPE immediately (server-side)
+                        logger.info(f"  ⚡ Triggering API Snipe for task #{task.id}...")
+                        from .lightning_snipe import lightning_snipe_task
+                        lightning_snipe_task.delay(held.id)
+                    else:
+                        # Push to browser_pending for local Playwright agent
+                        import base64 as _b64
+                        slot_info = _b64.b64encode(
+                            f"{date}|{slot_time}|{slot_id}|{task.visitors}|{total}|{task.adult_count}|{task.child_count}".encode()
+                        ).decode()
+                        from django.core.cache import cache as _cache
+                        pending = _cache.get('browser_pending', [])
+                        pending.append({
+                            'data': f'open_browser:{held.id}:{slot_info}',
+                            'user': f'Auto-snipe task #{task.id}',
+                            'auto': True,  # flag: no button click needed
+                        })
+                        _cache.set('browser_pending', pending, timeout=300)
+                        logger.info(f"  📲 Browser open queued for agent")
                 else:
                     logger.warning(f"  Recap failed: {rr.status_code} {rr.text[:100]}")
             except Exception as e:

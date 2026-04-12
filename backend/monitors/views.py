@@ -865,6 +865,8 @@ def list_held_slots(request):
             'slot_time': h.slot_time,
             'ticket_name': h.ticket_name,
             'visitors': h.visitors,
+            'adult_count': h.adult_count,
+            'child_count': h.child_count,
             'total_price': str(h.total_price),
             'status': h.status,
             'hold_duration_minutes': h.hold_duration_minutes(),
@@ -967,6 +969,28 @@ def get_buyer_profile(request):
         })
     except Exception as e:
         return Response({'error': str(e)})
+
+
+@api_view(['GET'])
+def get_buyer_card(request):
+    """Return the card details for the first active agency — used for auto-pay."""
+    from .models import BuyerProfile, Agency
+    try:
+        agency = Agency.objects.filter(is_active=True).exclude(plan='system').first()
+        if not agency:
+            return Response({'error': 'No active agency found'}, status=404)
+        profile = BuyerProfile.objects.filter(agency=agency).first()
+        if not profile or not profile.card_number:
+            return Response({'error': 'No card details found'}, status=404)
+            
+        return Response({
+            'card_number': profile.card_number,
+            'card_expiry': profile.card_expiry or '', # MM/YY
+            'card_cvv': profile.card_cvv or '',
+            'card_holder': profile.card_holder or f"{profile.first_name} {profile.last_name}",
+        })
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
 
 
 @api_view(['POST'])
@@ -1139,6 +1163,8 @@ def generate_realtime_epay(request):
             dates=json.dumps([date]),
             preferred_times=json.dumps([time_slot]),
             visitors=visitors,
+            adult_count=visitors,
+            child_count=0,
             ticket_type=0,
             ticket_label='Biglietto Intero',
             check_interval=60,
@@ -1621,8 +1647,8 @@ def _do_reservation(request, held):
         "visitId": held.slot_id,
         "visitTypeId": int(held.ticket_id),
         "tickets": [
-            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": held.visitors},
-            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(held.adult_count)},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(held.child_count)},
         ],
         "services": reservation_services,
         "representativeUser": profile.to_representative_user(),

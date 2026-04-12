@@ -72,19 +72,20 @@ def _get_services(session, slot_id, ticket_id, visitors):
     return []  # always return list, never None
 
 
-def _build_recap_body(slot_id, ticket_id, visitors, services):
-    """
-    Build the recap POST body with correct ticket/service IDs.
-    CRITICAL: quantity for tickets must be a STRING (Vatican API requirement).
-    """
+def _build_recap_body(slot_id, ticket_id, visitors, services, adult_count=None, child_count=None):
+    if adult_count is None:
+        adult_count = visitors
+    if child_count is None:
+        child_count = 0
+        
     body = {
         "visitId": str(slot_id),
         "visitTypeId": int(ticket_id),
         "visitorNum": int(visitors),
         "lang": "it",
         "tickets": [
-            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(visitors)},
-            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(adult_count)},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(child_count)},
         ],
         "additionalCosts": {},
         "services": []
@@ -145,7 +146,8 @@ def hold_slot(task, date, slot_id, slot_time, ticket_id, ticket_name, visitors, 
     services = _get_services(s, slot_id, ticket_id, visitors)
 
     # Build recap body
-    body = _build_recap_body(slot_id, ticket_id, visitors, services)
+    body = _build_recap_body(slot_id, ticket_id, visitors, services, 
+                             adult_count=task.adult_count, child_count=task.child_count)
 
     # Call recap — this is the hold
     try:
@@ -189,6 +191,8 @@ def hold_slot(task, date, slot_id, slot_time, ticket_id, ticket_name, visitors, 
         ticket_id=str(ticket_id),
         ticket_name=ticket_name,
         visitors=visitors,
+        adult_count=task.adult_count,
+        child_count=task.child_count,
         total_price=total_price,
         jsessionid=jsessionid,
         ticketmv=ticketmv,
@@ -327,7 +331,8 @@ def _re_hold(held_slot, session=None):
         pass  # fall back to stored ticket_id
 
     services = _get_services(session, held_slot.slot_id, ticket_id, held_slot.visitors)
-    body = _build_recap_body(held_slot.slot_id, ticket_id, held_slot.visitors, services or [])
+    body = _build_recap_body(held_slot.slot_id, ticket_id, held_slot.visitors, services or [],
+                             adult_count=held_slot.adult_count, child_count=held_slot.child_count)
 
     try:
         r = session.post(f'{BASE}/api/visit/recap', json=body, headers=HEADERS, timeout=10)
@@ -440,7 +445,8 @@ def _fresh_re_hold(held_slot):
 
     # Step 3: Recap with fresh slot_id + ticket_id on same session
     services = _get_services(s, fresh_slot_id, ticket_id, held_slot.visitors)
-    body = _build_recap_body(fresh_slot_id, ticket_id, held_slot.visitors, services)
+    body = _build_recap_body(fresh_slot_id, ticket_id, held_slot.visitors, services,
+                             adult_count=held_slot.adult_count, child_count=held_slot.child_count)
 
     try:
         r = s.post(f'{BASE}/api/visit/recap', json=body, headers=HEADERS, timeout=10)

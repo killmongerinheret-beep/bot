@@ -36,6 +36,7 @@ def kb_main():
         [InlineKeyboardButton("🎫 Book a Ticket", callback_data='book')],
         [InlineKeyboardButton("➕ Add Monitor", callback_data='add')],
         [InlineKeyboardButton("📋 List Monitors", callback_data='list')],
+        [InlineKeyboardButton("⚡ Snipes", callback_data='snipes')],
         [InlineKeyboardButton("🗑️ Remove Monitor", callback_data='remove')],
         [InlineKeyboardButton("📊 Status", callback_data='status')],
     ])
@@ -78,10 +79,17 @@ def kb_calendar(year: int, month: int):
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel')])
     return InlineKeyboardMarkup(rows)
 
-def kb_visitors():
+def kb_visitors_adults():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(str(i), callback_data=f'vis:{i}') for i in range(1, 6)],
-        [InlineKeyboardButton(str(i), callback_data=f'vis:{i}') for i in range(6, 11)],
+        [InlineKeyboardButton(str(i), callback_data=f'vis_a:{i}') for i in range(1, 6)],
+        [InlineKeyboardButton(str(i), callback_data=f'vis_a:{i}') for i in range(6, 11)],
+        [InlineKeyboardButton("❌ Cancel", callback_data='cancel')],
+    ])
+
+def kb_visitors_children():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(str(i), callback_data=f'vis_c:{i}') for i in range(0, 5)],
+        [InlineKeyboardButton(str(i), callback_data=f'vis_c:{i}') for i in range(5, 11)],
         [InlineKeyboardButton("❌ Cancel", callback_data='cancel')],
     ])
 
@@ -209,7 +217,7 @@ def summary(ud):
     tier_icons = {'notify': '🔔 Notify Only', 'snipe': '⚡ Snipe'}
     lines = [
         f"📅 Date: {ud.get('date','—')}",
-        f"👥 Visitors: {ud.get('visitors','—')}",
+        f"👥 Visitors: {ud.get('visitors','—')} ({ud.get('adult_count',0)} Adults, {ud.get('child_count',0)} Children)",
         f"🎫 Ticket: {ud.get('ticket_label','—')}",
     ]
     if ud.get('language'):
@@ -482,6 +490,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Add flow ──
     if data == 'add':
         ud['step'] = 'date'
+        # Reset state for fresh monitor
+        ud.pop('selected_times', None)
+        ud.pop('preferred_times', None)
+        ud.pop('snipe_participants', None)
+        ud.pop('adult_count', None)
+        ud.pop('child_count', None)
+        ud.pop('visitors', None)
+        
         now = datetime.now()
         await query.edit_message_text(
             "📅 Pick a date:",
@@ -520,18 +536,30 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith('date:'):
         date_val = data.split(':', 1)[1]
         ud['date'] = date_val
-        ud['step'] = 'visitors'
+        ud['step'] = 'visitors_a'
         await query.edit_message_text(
-            f"✅ Date: {date_val}\n\n👥 How many visitors?",
-            reply_markup=kb_visitors()
+            f"✅ Date: {date_val}\n\n👥 How many *Adults*?",
+            parse_mode='Markdown',
+            reply_markup=kb_visitors_adults()
         )
         return
 
-    if data.startswith('vis:'):
-        ud['visitors'] = int(data.split(':')[1])
+    if data.startswith('vis_a:'):
+        ud['adult_count'] = int(data.split(':')[1])
+        ud['step'] = 'visitors_c'
+        await query.edit_message_text(
+            f"✅ Date: {ud['date']}\n✅ Adults: {ud['adult_count']}\n\n👥 How many *Children* (6-18y)?",
+            parse_mode='Markdown',
+            reply_markup=kb_visitors_children()
+        )
+        return
+
+    if data.startswith('vis_c:'):
+        ud['child_count'] = int(data.split(':')[1])
+        ud['visitors'] = ud['adult_count'] + ud['child_count']
         ud['step'] = 'ticket'
         await query.edit_message_text(
-            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']}\n\n🎫 Select ticket type:",
+            f"✅ Date: {ud['date']}\n✅ Visitors: {ud['visitors']} ({ud['adult_count']}A, {ud['child_count']}C)\n\n🎫 Select ticket type:",
             reply_markup=kb_ticket()
         )
         return
@@ -628,13 +656,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if tier == 'snipe':
             # Collect participant names before time selection
-            visitors = ud.get('visitors', 1)
+            a_count = ud.get('adult_count', 1)
+            c_count = ud.get('child_count', 0)
             ud['snipe_participants'] = []
             ud['step'] = 'snipe_name'
+            
+            label = f"👤 Adult 1/{a_count}" if a_count > 0 else f"👤 Child 1/{c_count}"
             await query.edit_message_text(
-                f"⚡ *Snipe — {visitors} visitor{'s' if visitors > 1 else ''}*\n\n"
+                f"⚡ *Snipe — {ud['visitors']} Visitors*\n"
+                f"({a_count} Adults, {c_count} Children)\n\n"
                 f"Enter the name of each participant for the Vatican booking.\n\n"
-                f"👤 Participant 1/{visitors} — send *First Last*:\n_(e.g. `Mario Rossi`)_",
+                f"{label} — send *First Last*:\n_(e.g. `Mario Rossi`)_",
                 parse_mode='Markdown'
             )
         else:
@@ -654,7 +686,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method_label = '🚀 API (fast)' if method == 'api' else '🌐 Playwright (free)'
         ud['step'] = 'times'
         await query.edit_message_text(
-            f"✅ Checkout: {method_label}\n\n⏰ Select the time slot to snipe:",
+            f"✅ Checkout: {method_label}\n\n⏰ Select the time slots to snipe:",
             reply_markup=kb_times(ud.get("selected_times",[]))
         )
         return
@@ -681,6 +713,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Status ──
     if data == 'status':
         await do_status(query, context)
+        return
+
+    if data == 'snipes':
+        await do_list_snipes(query, context)
         return
 
     # ── Pay Hold ──
@@ -906,18 +942,35 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Snipe setup: collect participant names inline ──
     if step == 'snipe_name':
         visitors = ud.get('visitors', 1)
+        a_count = ud.get('adult_count', 1)
+        c_count = ud.get('child_count', 0)
         participants = ud.get('snipe_participants', [])
 
         parts = text.split(None, 1)
         first = parts[0].strip()
         last = parts[1].strip() if len(parts) > 1 else ''
-        participants.append({'first_name': first, 'last_name': last})
+        
+        # Determine ticket type based on current count
+        ticket_type = 'intero' if len(participants) < a_count else 'ridotto'
+        label = 'Adult' if ticket_type == 'intero' else 'Child'
+        
+        participants.append({
+            'first_name': first, 
+            'last_name': last,
+            'ticketType': ticket_type
+        })
         ud['snipe_participants'] = participants
 
         if len(participants) < visitors:
+            next_idx = len(participants)
+            if next_idx < a_count:
+                next_label = f"Adult {next_idx + 1}/{a_count}"
+            else:
+                next_label = f"Child {next_idx - a_count + 1}/{c_count}"
+                
             await update.message.reply_text(
-                f"✅ {first} {last}\n\n"
-                f"👤 Participant {len(participants)+1}/{visitors} — send *First Last* name:",
+                f"✅ {label}: {first} {last}\n\n"
+                f"👤 {next_label} — send *First Last* name:",
                 parse_mode='Markdown'
             )
         else:
@@ -988,7 +1041,13 @@ async def do_create_monitor(query, context):
     ud = context.user_data
     agency_id = ud.get('agency_id')
     date = ud.get('date')
-    visitors = ud.get('visitors')
+    visitors = ud.get('visitors') or 1
+    adult_count = ud.get('adult_count')
+    if adult_count is None:
+        adult_count = visitors
+    child_count = ud.get('child_count')
+    if child_count is None:
+        child_count = 0
     ticket_type = ud.get('ticket_type', 0)
     ticket_name = ud.get('ticket_name', "Musei Vaticani - Biglietti d'ingresso")
     ticket_label = ud.get('ticket_label', 'Standard Entry')
@@ -998,17 +1057,26 @@ async def do_create_monitor(query, context):
     try:
         agency = await sync_to_async(Agency.objects.get)(id=agency_id)
 
-        # Check duplicate
-        existing = await sync_to_async(
+        # Check duplicate — only block if EXACT same date+visitors+times+tier
+        existing_list = await sync_to_async(list)(
             MonitorTask.objects.filter(
                 agency=agency, site='vatican',
                 dates__contains=[date], visitors=visitors,
-                ticket_type=ticket_type, is_active=True
-            ).first
-        )()
-        if existing:
+                ticket_type=ticket_type, tier=tier, is_active=True
+            )
+        )
+
+        pref_set = set(preferred_times)
+        duplicate = None
+        for ex in existing_list:
+            if set(ex.preferred_times or []) == pref_set:
+                duplicate = ex
+                break
+
+        if duplicate:
+            times_str = ', '.join(sorted(duplicate.preferred_times or []))
             await query.edit_message_text(
-                f"⚠️ Monitor already exists (Task #{existing.id})\n\nDate: {date} · Visitors: {visitors}",
+                f"⚠️ Monitor already exists (Task #{duplicate.id})\n\nDate: {date} · Visitors: {visitors}\nTimes: {times_str}",
                 reply_markup=kb_back()
             )
             return
@@ -1024,6 +1092,8 @@ async def do_create_monitor(query, context):
             dates=[date],
             preferred_times=preferred_times,
             visitors=visitors,
+            adult_count=adult_count,
+            child_count=child_count,
             ticket_type=ticket_type,
             ticket_label=ticket_label,
             ticket_name=ticket_name,
@@ -1171,6 +1241,73 @@ async def do_status(query, context):
         f"⏳ Other: {len(tasks)-available-sold_out}\n\n⚡ Running 24/7",
         reply_markup=kb_back()
     )
+
+
+async def snipes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/snipes command — show active snipe monitors and stats."""
+    from asgiref.sync import sync_to_async
+    agency = await get_agency(update.effective_chat.id)
+    if not agency:
+        await update.message.reply_text("⚠️ Chat not linked to an agency.")
+        return
+
+    @sync_to_async
+    def get_snipes():
+        from monitors.models import MonitorTask, HeldSlot
+        snipes = list(MonitorTask.objects.filter(agency=agency, tier='snipe', is_active=True).order_by('dates'))
+        # Active holds
+        holds = list(HeldSlot.objects.filter(task__agency=agency, status__in=['held','paying']).order_by('-hold_started_at')[:10])
+        return snipes, holds
+
+    snipes, holds = await get_snipes()
+
+    msg = f"⚡ *Vatican Snipes Dashboard*\n\n"
+    if not snipes:
+        msg += "❌ No active snipe monitors."
+    else:
+        msg += f"✅ *{len(snipes)} Active Snipe Tasks:*\n"
+        for s in snipes:
+            msg += f"• #{s.id} | {s.dates[0]} | {s.visitors}v | {s.checkout_method}\n"
+
+    msg += "\n🕒 *Recent/Active Holds:*\n"
+    if not holds:
+        msg += "_None currently held_"
+    for h in holds:
+        rem = max(0, 24 - h.hold_duration_hours())
+        msg += f"• {h.date} {h.slot_time} | {h.visitors}v | ⏱{rem:.1f}h\n"
+
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=kb_main())
+
+
+async def do_list_snipes(query, context):
+    """Callback for the 'Snipes' button."""
+    from asgiref.sync import sync_to_async
+    agency_id = context.user_data.get('agency_id')
+    
+    @sync_to_async
+    def get_snipes():
+        from monitors.models import MonitorTask, HeldSlot
+        snipes = list(MonitorTask.objects.filter(agency_id=agency_id, tier='snipe', is_active=True).order_by('dates'))
+        holds = list(HeldSlot.objects.filter(task__agency_id=agency_id, status__in=['held','paying']).order_by('-hold_started_at')[:5])
+        return snipes, holds
+        
+    snipes, holds = await get_snipes()
+    
+    msg = f"⚡ *Snipe Management*\n\n"
+    if not snipes:
+        msg += "No active snipe monitors."
+    else:
+        for s in snipes:
+            status = "🟢" if s.last_status == 'available' else "🔴"
+            msg += f"{status} #{s.id} | {s.dates[0]} | {s.visitors}v | {s.checkout_method}\n"
+
+    if holds:
+        msg += "\n🔒 *Current Holds:*\n"
+        for h in holds:
+            rem = max(0, 24 - h.hold_duration_hours())
+            msg += f"• {h.date} {h.slot_time} ({rem:.1f}h left)\n"
+            
+    await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=kb_back())
 
 
 async def do_pay_hold(query, context, hold_id):
@@ -2195,6 +2332,7 @@ def main():
     app.add_handler(CommandHandler('bulkhold', bulkhold_cmd))
     app.add_handler(CommandHandler('setbrowsergroup', setbrowsergroup_cmd))
     app.add_handler(CommandHandler('holds', holds_cmd))
+    app.add_handler(CommandHandler('snipes', snipes_cmd))
     app.add_handler(CommandHandler('book', book_cmd))
     app.add_handler(CommandHandler('pending', pending_cmd))
 

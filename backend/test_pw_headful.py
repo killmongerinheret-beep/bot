@@ -26,7 +26,9 @@ from zoneinfo import ZoneInfo
 
 # ── CONFIG — edit these ───────────────────────────────────────────────────────
 DATE = '25/04/2026'       # DD/MM/YYYY — pick an available date
-VISITORS = 1
+ADULTS = 2
+KIDS = 1
+VISITORS = ADULTS + KIDS
 SLOT_TIME = '09:00'       # preferred time (will pick closest available)
 
 # Profile data (replace with real data)
@@ -193,31 +195,47 @@ async def run():
         except Exception as e:
             print(f"  bookTicket not found: {e}")
 
-        # ── Step 5: Set quantity ──────────────────────────────────────────────
-        print(f"[5] Setting quantity ({VISITORS})...")
+        # ── Step 5: Set quantity (Adults + Kids) ──────────────────────────────
+        print(f"[5] Setting quantity (Adults: {ADULTS}, Kids: {KIDS})...")
         try:
-            # From recording: click ticketQuantity then ticketQuantitySection
-            qty = await page.query_selector("[data-cy='ticketQuantity']")
-            if qty:
-                await qty.click()
-                await page.wait_for_timeout(500)
-            qty_sec = await page.query_selector("[data-cy='ticketQuantitySection']")
-            if qty_sec:
-                await qty_sec.click()
-                await page.wait_for_timeout(500)
-                print(f"  ✅ Quantity set")
-            # For visitors > 1, repeat
-            for _ in range(VISITORS - 1):
-                qty2 = await page.query_selector("[data-cy='ticketQuantity']")
-                if qty2:
-                    await qty2.click()
-                    await page.wait_for_timeout(300)
-                qty_sec2 = await page.query_selector("[data-cy='ticketQuantitySection']")
-                if qty_sec2:
-                    await qty_sec2.click()
-                    await page.wait_for_timeout(300)
+            # Row 0: Biglietto Intero (Adults)
+            # Row 1: Biglietto Ridotto (Children)
+            
+            # 1. Expand dropdown if needed
+            qty_buttons = await page.query_selector_all("[data-cy='ticketQuantity']")
+            if qty_buttons:
+                # Adults: Click ADULTS-1 times (since 1 is usually default or we start from 1)
+                # Actually, in the Vatican UI, clicking the '+' usually happens after opening the section.
+                # However, the recording shows clicking 'ticketQuantity' then 'ticketQuantitySection'.
+                
+                # ADULTS
+                print(f"  Selecting {ADULTS} Adults...")
+                for i in range(ADULTS - (1 if ADULTS > 0 else 0)): # If ADULTS=1, do nothing else. If 2, click once.
+                     # Click the first row's '+' or quantity section
+                     sections = await page.query_selector_all("[data-cy='ticketQuantitySection']")
+                     if len(sections) > 0:
+                         await sections[0].click()
+                         await page.wait_for_timeout(500)
+
+                # KIDS
+                if KIDS > 0:
+                    print(f"  Selecting {KIDS} Kids...")
+                    # First, we need to ensure the Ridotto row is visible or the quantity button is clicked
+                    # Sometimes you need to click 'ticketQuantity' for the second row too
+                    if len(qty_buttons) > 1:
+                        # Click the second row's quantity dropdown/button
+                        await qty_buttons[1].click()
+                        await page.wait_for_timeout(500)
+                        
+                        for i in range(KIDS):
+                            sections = await page.query_selector_all("[data-cy='ticketQuantitySection']")
+                            if len(sections) > 1:
+                                await sections[1].click()
+                                await page.wait_for_timeout(500)
+            
+            print(f"  ✅ Quantities set")
         except Exception as e:
-            print(f"  Quantity: {e}")
+            print(f"  Quantity error: {e}")
 
         # ── Step 6: Select time slot ──────────────────────────────────────────
         print(f"[6] Selecting time {SLOT_TIME}...")

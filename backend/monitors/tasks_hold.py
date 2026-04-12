@@ -277,13 +277,12 @@ def _attempt_snipe(task, held):
         "visitId": held.slot_id,
         "visitTypeId": int(held.ticket_id),
         "tickets": [
-            # CRITICAL: quantity must be STRING per Vatican API
-            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(held.visitors)},
-            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(held.adult_count)},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(held.child_count)},
         ],
         "services": reservation_services,
         "representativeUser": profile.to_representative_user(),
-        "participantUser": profile.to_participant_list(held.visitors, ticket_id=60, service_ids=service_ids),
+        "participantUser": profile.to_participant_list(held.visitors, adult_count=held.adult_count, child_count=held.child_count, ticket_id=60, service_ids=service_ids),
         "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
     }
 

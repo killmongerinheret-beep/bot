@@ -13,7 +13,9 @@ from monitors.models import BuyerProfile, Agency
 from datetime import datetime, timedelta
 
 BASE = 'https://tickets.museivaticani.va'
-VISITORS = 1
+VISITORS = 3
+ADULTS = 2
+KIDS = 1
 
 agency = Agency.objects.filter(is_active=True).exclude(plan='system').first()
 profile = BuyerProfile.objects.filter(agency=agency).first()
@@ -95,14 +97,14 @@ ITORS), 'visitDate': d,
             "visitId": slot_id, "visitTypeId": int(tid),
             "visitorNum": VISITORS, "lang": "it",
             "tickets": [
-lietto Intero", "price": 20, "quantity": str(VISITORS)},
-                {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+                {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(ADULTS)},
+                {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(KIDS)},
             ],
             "additionalCosts": {"service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": VISITORS}},
             "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": VISITORS}],
         }
         rr = await page.request.post(f'{BASE}/api/visit/recap',
-            data=json.dumps(recap_body), head
+            data=json.dumps(recap_body), headers=HC)
         if rr.status != 200:
             print(f"  Recap failed: {rr.status}"); await browser.close(); return None
         rd = await rr.json()

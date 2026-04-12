@@ -134,6 +134,8 @@ class MonitorTask(models.Model):
     dates = models.JSONField(help_text="List of dates to check (e.g., ['2026-06-15'])")
     preferred_times = models.JSONField(help_text="List of preferred times (e.g., ['10:00', '14:30'])")
     visitors = models.PositiveIntegerField(default=1)
+    adult_count = models.PositiveIntegerField(default=1)
+    child_count = models.PositiveIntegerField(default=0)
     ticket_type = models.IntegerField(choices=TICKET_TYPE_CHOICES, default=0)
     ticket_label = models.CharField(max_length=255, blank=True, null=True, help_text="e.g. 'Standard Entry (Full Price)'") 
     
@@ -181,6 +183,10 @@ class MonitorTask(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        self.visitors = self.adult_count + self.child_count
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.site.upper()} Task - {self.agency.name} ({self.created_at.strftime('%Y-%m-%d')})"
@@ -244,7 +250,12 @@ class BuyerProfile(models.Model):
             'language': self.language,
         }
 
-    def to_participant_list(self, visitors, ticket_id=60, service_ids=None):
+    def to_participant_list(self, visitors, adult_count=None, child_count=None, ticket_id=60, service_ids=None):
+        if adult_count is None:
+            adult_count = visitors
+        if child_count is None:
+            child_count = 0
+            
         if service_ids is None:
             service_ids = [58]
         # Use uploaded participant names if available, otherwise repeat representative
@@ -272,8 +283,8 @@ class BuyerProfile(models.Model):
             out.append({
                 'name': first,
                 'surname': last,
-                'id': ticket_id,
-                'ticketType': 'intero',
+                'id': ticket_id if i < adult_count else 61, # 61 is Ridotto
+                'ticketType': 'intero' if i < adult_count else 'ridotto',
                 'services': service_ids,
             })
         return out
@@ -296,6 +307,8 @@ class HeldSlot(models.Model):
     ticket_id = models.CharField(max_length=50)
     ticket_name = models.CharField(max_length=300)
     visitors = models.PositiveIntegerField(default=2)
+    adult_count = models.PositiveIntegerField(default=2)
+    child_count = models.PositiveIntegerField(default=0)
     total_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     jsessionid = models.CharField(max_length=255)
     ticketmv = models.CharField(max_length=50, blank=True, null=True)
@@ -441,6 +454,8 @@ class BulkHoldConfig(models.Model):
     time_to = models.CharField(max_length=5, default='17:00', help_text='HH:MM')
     # Visitors per slot
     visitors = models.PositiveIntegerField(default=2)
+    adult_count = models.PositiveIntegerField(default=2)
+    child_count = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # Stats

@@ -26,6 +26,11 @@ import time
 import requests
 import logging
 from datetime import datetime
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
+import argparse
+import subprocess
+import shutil
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -58,10 +63,11 @@ PROFILE = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 CHROME_PATH = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
-# Use a dedicated Chrome profile for the agent (separate from your main Chrome)
-# This avoids conflicts when Chrome is already running
-CHROME_PROFILE = os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Google\Chrome\VaticanAgent')
+# Use a persistent Chrome profile for the agent to bypass Cloudflare
+CHROME_PROFILE = r"d:\bot\vatican_chrome_profile"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 last_update_id = 0      # Telegram update offset
+processed_slots = set() # track slots already notified
 
 
 def send_telegram(chat_id: str, msg: str, reply_markup=None):
@@ -163,11 +169,15 @@ async def open_checkout(slot: dict):
     Captures epay URL and sends to Telegram.
     Auto-closes after 20 minutes.
     """
-    from playwright.async_api import async_playwright
-
+    is_setup = slot is None
+    if is_setup:
+        slot = {'id': 'setup', 'date': '11/04/2026', 'slot_time': '12:00', 'visitors': 1}
+        
     date = slot.get('date', '')          # DD/MM/YYYY
     slot_time = slot.get('slot_time', '')
     visitors = slot.get('visitors', 1)
+    adult_count = slot.get('adult_count', visitors)
+    child_count = slot.get('child_count', 0)
     hold_id = slot.get('id')
     ticket_name = slot.get('ticket_name', 'Vatican Museums')
     total = slot.get('total_price', '?')
@@ -214,6 +224,8 @@ async def open_checkout(slot: dict):
 
     from zoneinfo import ZoneInfo
     rome = ZoneInfo('Europe/Rome')
+    if not date or '/' not in date:
+        date = '11/04/2026'
     day, month, year = date.split('/')
     dt = datetime(int(year), int(month), int(day), 0, 0, 0, tzinfo=rome)
     ts = int(dt.timestamp() * 1000)
@@ -229,41 +241,25 @@ async def open_checkout(slot: dict):
     start_time = time.time()
 
     async with async_playwright() as p:
-        # Launch REAL Chrome via CDP — Cloudflare cannot detect this
-        import subprocess, tempfile, shutil
-
-        # Create a temp profile copied from your real Chrome profile
-        # This gives Cloudflare real browser signals (cookies, history, etc.)
-        real_profile = os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Google\Chrome\User Data')
-        temp_profile = os.path.join(tempfile.gettempdir(), 'vatican_chrome_profile')
-
-        # Copy Default profile if temp doesn't exist yet
-        if not os.path.exists(temp_profile):
-            try:
-                src = os.path.join(real_profile, 'Default')
-                dst = os.path.join(temp_profile, 'Default')
-                if os.path.exists(src):
-                    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
-                        'Cache', 'Code Cache', 'GPUCache', 'ShaderCache',
-                        'Service Worker', 'CacheStorage', '*.log'
-                    ))
-                    logger.info(f"  Copied Chrome profile to temp")
-            except Exception as e:
-                logger.debug(f"  Profile copy: {e}")
-
-        # Launch Chrome with remote debugging on port 9222
+        # Launch REAL Chrome via CDP
+        # Setup Mode
+        is_setup = (slot.get('id') == 'setup')
         debug_port = 9222
-        chrome_proc = subprocess.Popen([
+        chrome_cmd = [
             CHROME_PATH,
             f'--remote-debugging-port={debug_port}',
-            f'--user-data-dir={temp_profile}',
+            f'--user-data-dir={CHROME_PROFILE}',
             '--profile-directory=Default',
             '--no-first-run',
             '--no-default-browser-check',
             '--start-maximized',
             '--disable-blink-features=AutomationControlled',
-            'about:blank',
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            f'--user-agent={USER_AGENT}',
+            'about:blank' if not is_setup else 'https://google.com',
+        ]
+        
+        logger.info(f"  Launching real Chrome via CDP...")
+        chrome_proc = subprocess.Popen(chrome_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Wait for Chrome to start
         await asyncio.sleep(2)
@@ -273,7 +269,12 @@ async def open_checkout(slot: dict):
             browser = await p.chromium.connect_over_cdp(f'http://localhost:{debug_port}')
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             page = await ctx.new_page()
-            logger.info(f"  Connected to real Chrome via CDP")
+            await Stealth().apply_stealth_async(page)
+            logger.info(f"  Connected to real Chrome via CDP with Stealth")
+            
+            if is_setup:
+                logger.info("Manual Setup Mode active. Please sign in and establish trusted session.")
+                while True: await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"  CDP connect failed: {e} — falling back to Playwright Chromium")
             chrome_proc.terminate()
@@ -363,43 +364,55 @@ async def open_checkout(slot: dict):
         except Exception as e:
             logger.warning(f"  bookTicket: {e}")
 
-        # ── Set quantity ──────────────────────────────────────────────────────
-        logger.info(f"[3] Setting quantity ({visitors})...")
+        # ── Set quantity (Adults & Children) ──────────────────────────────────
+        logger.info(f"[3] Setting quantity: {adult_count} Adults, {child_count} Children...")
         try:
-            # Open the quantity dropdown
-            qty = await page.query_selector("[data-cy='ticketQuantity']")
-            if qty:
-                await qty.click()
-                await page.wait_for_timeout(500)
+            # We iterate through rows in app-ticket-price-list to find Intero and Ridotto
+            rows = await page.query_selector_all("app-ticket-price-list > div > div > div")
+            for row in rows:
+                text = (await row.inner_text()).lower()
+                
+                # Check if this div is actually a row by checking if it has a quantity button
+                dropdown = await row.query_selector("[data-cy='ticketQuantity']")
+                if not dropdown:
+                    continue
 
-            # Select the exact number from the dropdown list
-            # Options are [data-cy='ticketQuantitySection'] items with text "1", "2", etc.
-            selected = await page.evaluate(f"""
-                () => {{
-                    const sections = Array.from(document.querySelectorAll("[data-cy='ticketQuantitySection']"))
-                        .filter(el => el.offsetParent !== null);
-                    for (const sec of sections) {{
-                        const text = sec.innerText.trim();
-                        if (text === '{visitors}' || text.startsWith('{visitors} ')) {{
-                            sec.click();
-                            return text;
-                        }}
-                    }}
-                    // Fallback: click the Nth item (0-indexed, so visitors-1)
-                    if (sections.length >= {visitors}) {{
-                        sections[{visitors - 1}].click();
-                        return sections[{visitors - 1}].innerText.trim();
-                    }}
-                    return null;
-                }}
-            """)
-            if selected:
-                logger.info(f"  ✅ Quantity selected: {selected}")
-            else:
-                logger.warning(f"  Could not find quantity {visitors} in dropdown")
+                target_qty = 0
+                label = ""
+                
+                if "intero" in text:
+                    target_qty = adult_count
+                    label = "Adult (Intero)"
+                elif "ridotto" in text:
+                    target_qty = child_count
+                    label = "Child (Ridotto)"
+                
+                if target_qty > 0:
+                    logger.info(f"  Setting {label} to {target_qty}...")
+                    await dropdown.click(force=True)
+                    await page.wait_for_timeout(700)
+                    
+                    # Search for the options INSIDE this specific dropdown
+                    options = await row.query_selector_all("app-dropdown section [data-cy='ticketQuantitySection']")
+                    found = False
+                    for opt in options:
+                        if await opt.is_visible():
+                            opt_text = (await opt.inner_text()).strip()
+                            if opt_text == str(target_qty):
+                                await opt.click(force=True)
+                                found = True
+                                logger.info(f"    ✅ Selected {target_qty}")
+                                break
+                                
+                    if not found:
+                        logger.warning(f"    ⚠️ Quantity option {target_qty} not found in visible options for {label}!")
+                        
+                    await page.wait_for_timeout(500)
+            
+            logger.info(f"  ✅ Quantities set")
             await page.wait_for_timeout(400)
         except Exception as e:
-            logger.debug(f"  Quantity: {e}")
+            logger.debug(f"  Quantity Error: {e}")
             logger.debug(f"  Quantity: {e}")
 
         # ── Select time slot ──────────────────────────────────────────────────
@@ -458,8 +471,34 @@ async def open_checkout(slot: dict):
 
         # Wait for checkout form
         try:
-            await page.wait_for_selector("[data-cy='managerSurname']", timeout=15000)
             logger.info(f"  ✅ Checkout form loaded")
+            
+            # ── Inject Heartbeat (Keep Session Alive) ──────────────────────────
+            logger.info(f"  💓 Starting background heartbeat (every 4 min)")
+            await page.evaluate(f"""
+                (slot_id, ticket_id, visitors, adult_count, child_count) => {{
+                    window._vatican_heartbeat = setInterval(() => {{
+                        console.log('💓 Sending heartbeat recap...');
+                        fetch('/api/visit/recap', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{
+                                visitId: slot_id,
+                                visitTypeId: parseInt(ticket_id),
+                                visitorNum: parseInt(visitors),
+                                lang: 'it',
+                                tickets: [
+                                    {{ id: 60, name: 'Biglietto Intero', price: 20, quantity: adult_count.toString() }},
+                                    {{ id: 61, name: 'Biglietto Ridotto', price: 10, quantity: child_count.toString() }}
+                                ],
+                                additionalCosts: {{}},
+                                services: []
+                            }})
+                        }}).then(r => console.log('💓 Heartbeat status:', r.status));
+                    }}, 240000); // 4 minutes
+                }}
+            """, str(slot.get('slot_id')), str(tid), visitors, adult_count, child_count)
+            
         except Exception:
             logger.warning(f"  Checkout form not found — URL: {page.url}")
 
@@ -597,7 +636,48 @@ async def open_checkout(slot: dict):
 
             # Check if user navigated to epay
             if 'epay.catholica.va' in page.url:
-                logger.info(f"✅ User navigated to epay: {page.url[:80]}")
+                logger.info(f"✅ Payment page detected: {page.url[:80]}")
+                
+                # ── Auto-Fill Card Details ────────────────────────────────────
+                try:
+                    logger.info("  Fetching card details from server...")
+                    card_r = requests.get(f'{SERVER_URL}/api/v1/buyer-card/', timeout=5)
+                    if card_r.status_code == 200:
+                        card = card_r.json()
+                        logger.info("  Filling payment form...")
+                        
+                        # Wait for form elements
+                        await page.wait_for_selector("input[id*='cardNumber'], input[ng-model*='cardNumber']", timeout=10000)
+                        
+                        # Card Number
+                        await page.fill("input[id*='cardNumber'], input[ng-model*='cardNumber']", card['card_number'])
+                        
+                        # Expiry (formats MM/YY or split)
+                        # Epay typically uses two fields for MM and YY or one MMYY
+                        if await page.query_selector("input[id*='expiryMonth']"):
+                            mm, yy = card['card_expiry'].split('/') # 12/26
+                            await page.fill("input[id*='expiryMonth']", mm)
+                            await page.fill("input[id*='expiryYear']", yy)
+                        else:
+                            await page.fill("input[id*='expiryDate'], input[ng-model*='expiry']", card['card_expiry'].replace('/', ''))
+                            
+                        # CVV
+                        await page.fill("input[id*='cvv'], input[ng-model*='cvv']", card['card_cvv'])
+                        
+                        # Card Holder
+                        await page.fill("input[id*='cardHolder'], input[ng-model*='holder']", card['card_holder'])
+                        
+                        # Terms and Conditions checkbox
+                        terms = await page.query_selector("input[type='checkbox'], [id*='terms']")
+                        if terms: await terms.click()
+                        
+                        logger.info("  ✅ Payment form auto-filled! Solve any remaining challenge and click PAY.")
+                        send_telegram(TRIGGER_GROUP_CHAT_ID, f"💳 Card details auto-filled for {date} {slot_time}. Please finish payment!")
+                    else:
+                        logger.warning(f"  Could not get card details: {card_r.status_code}")
+                except Exception as e:
+                    logger.error(f"  Auto-pay error: {e}")
+                
                 send_telegram(TRIGGER_GROUP_CHAT_ID, f"💳 Payment page opened for {date} {slot_time}")
                 await asyncio.sleep(120)
                 break
@@ -632,6 +712,7 @@ async def main():
     logger.info(f"Trigger group: {TRIGGER_GROUP_CHAT_ID}")
     logger.info(f"Polling every {POLL_INTERVAL}s...")
     logger.info(f"Press Ctrl+C to stop\n")
+    logger.info("Polling Vatican server for slots...")
 
     send_telegram(ADMIN_CHAT_ID, f"🤖 Browser Agent started on your machine\nWaiting for slots in group `{TRIGGER_GROUP_CHAT_ID}`")
 
@@ -685,8 +766,10 @@ async def main():
                                 'slot_id': s_parts[2] if len(s_parts) > 2 else '',
                                 'visitors': int(s_parts[3]) if len(s_parts) > 3 else 1,
                                 'total_price': s_parts[4] if len(s_parts) > 4 else '?',
+                                'adult_count': int(s_parts[5]) if len(s_parts) > 5 else int(s_parts[3] if len(s_parts) > 3 else 1),
+                                'child_count': int(s_parts[6]) if len(s_parts) > 6 else 0,
                             }
-                            logger.info(f"  Decoded slot: {slot['date']} {slot['slot_time']}")
+                            logger.info(f"  Decoded slot: {slot['date']} {slot['slot_time']} ({slot['adult_count']}A, {slot['child_count']}C)")
                         except Exception as e:
                             logger.warning(f"  Could not decode slot info: {e}")
 
@@ -722,6 +805,8 @@ async def main():
                             'date': date_str, 'slot_time': slot_time_str,
                             'slot_id': slot_id_str, 'visitors': visitors_n,
                             'total_price': total_str, 'id': None,
+                            'adult_count': int(s_parts[5]) if len(s_parts) > 5 else visitors_n,
+                            'child_count': int(s_parts[6]) if len(s_parts) > 6 else 0,
                         }
                         send_telegram(TRIGGER_GROUP_CHAT_ID,
                             f"🌐 *{user_name}* clicked Open Browser\n"
@@ -741,15 +826,22 @@ async def main():
 
 
 if __name__ == '__main__':
-    import sys
-    # Watchdog: restart on crash
-    while True:
-        try:
-            asyncio.run(main())
-        except KeyboardInterrupt:
-            logger.info("Agent stopped by user.")
-            sys.exit(0)
-        except Exception as e:
-            logger.error(f"Agent crashed: {e} — restarting in 10s...")
-            import time as _t
-            _t.sleep(10)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--setup", action="store_true", help="Open browser for manual login")
+    args = parser.parse_args()
+
+    if args.setup:
+        logger.info("Starting browser in SETUP mode...")
+        asyncio.run(open_checkout(None))
+    else:
+        # Watchdog: restart on crash
+        while True:
+            try:
+                asyncio.run(main())
+            except KeyboardInterrupt:
+                logger.info("Agent stopped by user.")
+                sys.exit(0)
+            except Exception as e:
+                logger.error(f"Agent crashed: {e} — restarting in 10s...")
+                import time as _t
+                _t.sleep(10)

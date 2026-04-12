@@ -2,7 +2,7 @@
   "cookies": [
     {
       "name": "JSESSIONID",
-      "value": "0EA901328C55AD4F974AC61529D7344E",
+      "value": "21F3B2A66193531577E4DE193D42ADD8",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -13,16 +13,6 @@
     {
       "name": "ticketmv",
       "value": "03",
-      "domain": "tickets.museivaticani.va",
-      "path": "/",
-      "expires": -1,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
-      "name": "SERVERID",
-      "value": "01|adk5Q",
       "domain": "tickets.museivaticani.va",
       "path": "/",
       "expires": -1,
@@ -1248,50 +1238,9 @@
       "timestamp": "2026-03-21T19:48:24.899757"
     },
     "11/04/2026_1_0": {
-      "ids": [
-        {
-          "id": "381506884",
-          "name": "Musei Vaticani - Biglietti d'ingresso"
-        },
-        {
-          "id": "1130745519",
-          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
-        },
-        {
-          "id": "2097009654",
-          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
-        },
-        {
-          "id": "1452833564",
-          "name": "N. Partecipanti 1 - 20"
-        },
-        {
-          "id": "271614052",
-          "name": "N. Partecipanti 1 - 20"
-        },
-        {
-          "id": "56658675",
-          "name": "N. Partecipanti 1 - 20"
-        },
-        {
-          "id": "1025682974",
-          "name": "N. Partecipanti 1 - 28"
-        },
-        {
-          "id": "1452143523",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "1774231568",
-          "name": "N. Partecipanti 1 - 10"
-        },
-        {
-          "id": "486569429",
-          "name": "N. Partecipanti 1 - 10"
-        }
-      ],
-      "jsessionid": "1958DC4A9E7F5E147FCF4FCFCE3253F9",
-      "timestamp": "2026-03-22T13:51:19.085555"
+      "ids": [],
+      "jsessionid": "660B72BD03FB06430BF4B8FB5D94C6B4",
+      "timestamp": "2026-04-10T18:49:11.641953"
     },
     "23/03/2026_10_0": {
       "ids": [],
@@ -1757,48 +1706,48 @@
     "18/04/2026_1_0": {
       "ids": [
         {
-          "id": "556122546",
+          "id": "127242684",
           "name": "Musei Vaticani - Biglietti d'ingresso"
         },
         {
-          "id": "2107613847",
+          "id": "707534639",
           "name": "Musei Vaticani - Visite Guidate Singoli Musei"
         },
         {
-          "id": "1521488011",
+          "id": "732764724",
           "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
         },
         {
-          "id": "1196410686",
+          "id": "116785",
           "name": "N. Partecipanti 1 - 20"
         },
         {
-          "id": "1585516825",
+          "id": "75807040",
           "name": "N. Partecipanti 1 - 20"
         },
         {
-          "id": "881199871",
+          "id": "859890623",
           "name": "N. Partecipanti 1 - 28"
         },
         {
-          "id": "477293967",
+          "id": "884145234",
           "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "152216642",
+          "id": "176727380",
           "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "1388497128",
+          "id": "2122370347",
           "name": "N. Partecipanti 1 - 10"
         },
         {
-          "id": "1782536522",
-          "name": "N. Partecipanti 1 - 10"
+          "id": "1642023258",
+          "name": "N. Partecipanti 11 - 30"
         }
       ],
-      "jsessionid": "D18FFBAB0FDFD4A370FF981B543E2CD6",
-      "timestamp": "2026-03-25T12:54:55.007418"
+      "jsessionid": "D35E1EE693AA47B47751E5C6CC2655AF",
+      "timestamp": "2026-04-10T18:58:28.390630"
     },
     "20/04/2026_1_0": {
       "ids": [
@@ -3323,7 +3272,150 @@
       ],
       "jsessionid": "0EA901328C55AD4F974AC61529D7344E",
       "timestamp": "2026-04-10T17:54:20.405240"
+    },
+    "14/04/2026_1_0": {
+      "ids": [
+        {
+          "id": "631179985",
+          "name": "Musei Vaticani - Biglietti d'ingresso"
+        },
+        {
+          "id": "383386064",
+          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
+        },
+        {
+          "id": "628778459",
+          "name": "N. Partecipanti 1 - 20"
+        },
+        {
+          "id": "1121964775",
+          "name": "N. Partecipanti 1 - 28"
+        },
+        {
+          "id": "321137393",
+          "name": "N. Partecipanti 11 - 30"
+        },
+        {
+          "id": "1977836250",
+          "name": "N. Partecipanti 11 - 20"
+        },
+        {
+          "id": "75744998",
+          "name": "N. Partecipanti 11 - 20"
+        },
+        {
+          "id": "1495456801",
+          "name": "Visita Guidata Singoli - Arte e Fede"
+        },
+        {
+          "id": "1736046144",
+          "name": "Palazzo Papale - Cupole Astronomiche"
+        },
+        {
+          "id": "1490653749",
+          "name": "Palazzo Papale - Biglietti d'ingresso"
+        }
+      ],
+      "jsessionid": "A5D1A775F84162FFF55DAF5A9BF02913",
+      "timestamp": "2026-04-10T18:53:53.954338"
+    },
+    "15/04/2026_2_0": {
+      "ids": [
+        {
+          "id": "367657738",
+          "name": "Musei Vaticani - Biglietti d'ingresso"
+        },
+        {
+          "id": "828393021",
+          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
+        },
+        {
+          "id": "1782113532",
+          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
+        },
+        {
+          "id": "1146299858",
+          "name": "N. Partecipanti 1 - 20"
+        },
+        {
+          "id": "1003471412",
+          "name": "N. Partecipanti 1 - 28"
+        },
+        {
+          "id": "1697799331",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1061985657",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1379892494",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "192579347",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "504036195",
+          "name": "N. Partecipanti 11 - 30"
+        }
+      ],
+      "jsessionid": "E2BE06E12D3D018B01CDE7B97D2DA9BD",
+      "timestamp": "2026-04-10T18:55:04.141234"
+    },
+    "17/04/2026_1_0": {
+      "ids": [
+        {
+          "id": "2100924793",
+          "name": "Musei Vaticani - Biglietti d'ingresso"
+        },
+        {
+          "id": "848202479",
+          "name": "Musei Vaticani - Visite Guidate Singoli Musei"
+        },
+        {
+          "id": "606998583",
+          "name": "Musei Vaticani - Visite Guidate Gruppi Musei"
+        },
+        {
+          "id": "51973298",
+          "name": "N. Partecipanti 1 - 20"
+        },
+        {
+          "id": "508466431",
+          "name": "N. Partecipanti 1 - 28"
+        },
+        {
+          "id": "1862284139",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1307258854",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "511029673",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "293177194",
+          "name": "N. Partecipanti 1 - 10"
+        },
+        {
+          "id": "1621080243",
+          "name": "N. Partecipanti 11 - 30"
+        }
+      ],
+      "jsessionid": "718527078364F859B8557343EE533463",
+      "timestamp": "2026-04-10T18:56:58.578162"
+    },
+    "11/04/2026_10_0": {
+      "ids": [],
+      "jsessionid": "21F3B2A66193531577E4DE193D42ADD8",
+      "timestamp": "2026-04-10T19:17:15.736245"
     }
   },
-  "last_updated": "2026-04-10T17:54:20.405256"
+  "last_updated": "2026-04-10T19:17:15.736262"
 }
