@@ -1057,6 +1057,10 @@ async def do_create_monitor(query, context):
     try:
         agency = await sync_to_async(Agency.objects.get)(id=agency_id)
 
+        tier = ud.get('tier', 'notify')
+        snipe_participants = ud.get('snipe_participants', [])
+        checkout_method = ud.get('checkout_method', 'api')
+
         # Check duplicate — only block if EXACT same date+visitors+times+tier
         existing_list = await sync_to_async(list)(
             MonitorTask.objects.filter(
@@ -1082,9 +1086,6 @@ async def do_create_monitor(query, context):
             return
 
         import json as _json
-        tier = ud.get('tier', 'notify')
-        snipe_participants = ud.get('snipe_participants', [])
-        checkout_method = ud.get('checkout_method', 'api')
         task = await sync_to_async(MonitorTask.objects.create)(
             agency=agency,
             site='vatican',
