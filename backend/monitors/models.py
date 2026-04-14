@@ -181,6 +181,12 @@ class MonitorTask(models.Model):
     last_status = models.CharField(max_length=50, default='unknown')
     last_result_summary = models.TextField(blank=True, null=True)
     
+    # Distributed Settings
+    remote_worker_needed = models.BooleanField(default=False, help_text="Set to True if this task should be handled by a remote Windows browser node instead of internal API.")
+    remote_worker_claimed = models.DateTimeField(null=True, blank=True, help_text="Timestamp when a remote worker started this task.")
+    agent_target = models.CharField(max_length=100, blank=True, null=True,
+        help_text="Specific agent ID to open Chrome on (e.g. 'windows-main'). NULL = any available agent.")
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -318,6 +324,7 @@ class HeldSlot(models.Model):
     last_keepalive_at = models.DateTimeField(default=timezone.now)
     released_at = models.DateTimeField(null=True, blank=True)
     payment_url = models.TextField(null=True, blank=True)
+    payment_ready = models.BooleanField(default=False, help_text="User clicked Pay in Telegram, signal the worker to break hold and proceed.")
     notes = models.TextField(blank=True, null=True)
 
     class Meta:

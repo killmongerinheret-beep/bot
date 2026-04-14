@@ -28,7 +28,13 @@ def keepalive_held_slots():
     logger.info(f"💓 Keepalive starting for {count} held slots")
     ok = expired = 0
 
+    from django.core.cache import cache
     for hold in active_holds:
+        # Skip holds that are paused (agent is about to click BUY)
+        if cache.get(f'hold_recap_paused:{hold.id}'):
+            logger.info(f"⏸️ Hold #{hold.id} recap paused — skipping keepalive (agent paying)")
+            ok += 1
+            continue
         age_h = hold.hold_duration_hours()
         if keepalive_slot(hold):
             try:

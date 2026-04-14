@@ -260,14 +260,24 @@ def sweep_notify_slot(date, slot_id, slot_time):
                             f"{date}|{slot_time}|{slot_id}|{task.visitors}|{total}|{task.adult_count}|{task.child_count}".encode()
                         ).decode()
                         from django.core.cache import cache as _cache
-                        pending = _cache.get('browser_pending', [])
-                        pending.append({
+                        job = {
                             'data': f'open_browser:{held.id}:{slot_info}',
                             'user': f'Auto-snipe task #{task.id}',
-                            'auto': True,  # flag: no button click needed
-                        })
-                        _cache.set('browser_pending', pending, timeout=300)
-                        logger.info(f"  📲 Browser open queued for agent")
+                            'auto': True,
+                        }
+                        # Route to specific agent if task has one set
+                        agent_target = getattr(task, 'agent_target', None)
+                        if agent_target:
+                            key = f'browser_pending_{agent_target}'
+                            q = _cache.get(key, [])
+                            q.append(job)
+                            _cache.set(key, q, timeout=300)
+                            logger.info(f"  📲 Browser open queued for agent '{agent_target}'")
+                        else:
+                            pending = _cache.get('browser_pending', [])
+                            pending.append(job)
+                            _cache.set('browser_pending', pending, timeout=300)
+                            logger.info(f"  📲 Browser open queued for any agent")
                 else:
                     logger.warning(f"  Recap failed: {rr.status_code} {rr.text[:100]}")
             except Exception as e:

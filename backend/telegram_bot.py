@@ -229,6 +229,8 @@ def summary(ud):
     if ud.get('checkout_method'):
         m = ud['checkout_method']
         lines.append(f"⚙️ Checkout: {'🚀 API' if m == 'api' else '🌐 Playwright'}")
+    if ud.get('agent_target'):
+        lines.append(f"🖥️ Agent: `{ud['agent_target']}`")
     lines.append(f"⏰ Time: {ud.get('times_label','Any')}")
     return '\n'.join(lines)
 
@@ -256,6 +258,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🏛️ Vatican Monitor Bot\nAgency: {agency.name}\n\nWhat would you like to do?",
         reply_markup=kb_main()
+    )
+
+
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/add — shortcut to jump straight into adding a snipe/monitor task."""
+    chat_id = update.effective_chat.id
+    agency = await get_agency(chat_id)
+    if not agency:
+        await update.message.reply_text("⚠️ Chat not linked to an agency. Send /start first.")
+        return
+    ud = context.user_data
+    ud.clear()
+    ud['agency_id'] = agency.id
+    ud['agency_name'] = agency.name
+    ud['agency_plan'] = agency.plan
+    ud['step'] = 'date'
+    now = datetime.now()
+    await update.message.reply_text(
+        "📅 Pick a date to monitor/snipe:",
+        reply_markup=kb_calendar(now.year, now.month)
     )
 
 
@@ -684,10 +706,50 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method = data.split(':')[1]  # 'api' or 'playwright'
         ud['checkout_method'] = method
         method_label = '🚀 API (fast)' if method == 'api' else '🌐 Playwright (free)'
+
+        if method == 'playwright':
+            # Ask which agent/machine should open the browser
+            import requests as _req
+            BACKEND = os.getenv('BACKEND_URL', 'http://backend:8000')
+            try:
+                r = _req.get(f'{BACKEND}/api/v1/agents/', timeout=4)
+                agents = r.json().get('agents', {}) if r.status_code == 200 else {}
+            except Exception:
+                agents = {}
+
+            rows = []
+            for aid in agents:
+                rows.append([InlineKeyboardButton(f"🖥️ {aid}", callback_data=f'agent_target:{aid}')])
+            rows.append([InlineKeyboardButton("🔀 Any available agent", callback_data='agent_target:any')])
+            rows.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel')])
+
+            await query.edit_message_text(
+                f"✅ Checkout: {method_label}\n\n"
+                f"🖥️ *Which machine should open Chrome?*\n\n"
+                f"{'Online agents shown above.' if agents else '⚠️ No agents online — make sure `local_browser_agent.py` is running on your PC.'}\n\n"
+                f"Select a machine or choose Any:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+        else:
+            # API method — no agent needed, go straight to times
+            ud['agent_target'] = None
+            ud['step'] = 'times'
+            await query.edit_message_text(
+                f"✅ Checkout: {method_label}\n\n⏰ Select the time slots to snipe:",
+                reply_markup=kb_times(ud.get("selected_times", []))
+            )
+        return
+
+    if data.startswith('agent_target:'):
+        target = data.split(':', 1)[1]  # agent name or 'any'
+        ud['agent_target'] = None if target == 'any' else target
+        label = f"🖥️ `{target}`" if target != 'any' else "🔀 Any available agent"
         ud['step'] = 'times'
         await query.edit_message_text(
-            f"✅ Checkout: {method_label}\n\n⏰ Select the time slots to snipe:",
-            reply_markup=kb_times(ud.get("selected_times",[]))
+            f"✅ Agent: {label}\n\n⏰ Select the time slots to snipe:",
+            parse_mode='Markdown',
+            reply_markup=kb_times(ud.get("selected_times", []))
         )
         return
 
@@ -1108,6 +1170,8 @@ async def do_create_monitor(query, context):
             notification_mode='available_only',
             is_active=True,
             last_status='pending',
+            remote_worker_needed=(tier == 'snipe'),
+            agent_target=ud.get('agent_target'),  # specific machine or None for any
             last_result_summary=f"Created via Telegram on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
@@ -1122,15 +1186,11 @@ async def do_create_monitor(query, context):
         if tier == 'snipe':
             try:
                 from monitors.tasks_sweep import sweep_notify_slot
-                from monitors.epay_ssl import make_vatican_session
                 import requests as _req
-                from datetime import datetime as _dt
-                from zoneinfo import ZoneInfo
 
-                # Quick check for the target date/times
-                s = make_vatican_session(use_proxy=True)
+                # Quick check for the target date/times — direct, no proxy
+                s = _req.Session()
                 H = {'Accept':'application/json','X-Requested-With':'XMLHttpRequest','Referer':'https://tickets.museivaticani.va/'}
-                # date is YYYY-MM-DD, convert to DD/MM/YYYY for API
                 year, month, day = date.split('-')
                 d_api = f"{day}/{month}/{year}"
 
@@ -1490,6 +1550,225 @@ async def holds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{status_icon} {h.date} {h.slot_time} · {h.visitors}v · €{h.total_price} · {ref or h.status}")
 
     await update.message.reply_text('\n'.join(lines), parse_mode='Markdown', reply_markup=kb_back())
+
+
+async def stop_recap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/stop_recap <hold_id> — pause keepalive so the agent can click BUY without interference."""
+    import requests as _req
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text(
+            "Usage: `/stop_recap <hold_id>`\n\nPauses the recap keepalive for 15 minutes so the browser can complete checkout.",
+            parse_mode='Markdown'
+        )
+        return
+
+    hold_id = int(args[0])
+    BACKEND = os.getenv('BACKEND_URL', 'http://backend:8000')
+    try:
+        r = _req.post(f'{BACKEND}/api/v1/holds/{hold_id}/pause-recap/', timeout=5)
+        if r.status_code == 200:
+            await update.message.reply_text(
+                f"⏸️ *Recap paused for Hold #{hold_id}*\n\n"
+                f"Keepalive stopped for 15 minutes.\n"
+                f"The browser agent can now click BUY without Vatican seeing a double-recap.\n\n"
+                f"If checkout fails, use `/resume_recap {hold_id}` to restart keepalive.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ Failed to pause recap: {r.status_code} — {r.text[:100]}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def resume_recap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/resume_recap <hold_id> — restart keepalive after a failed checkout."""
+    import requests as _req
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: `/resume_recap <hold_id>`", parse_mode='Markdown')
+        return
+
+    hold_id = int(args[0])
+    BACKEND = os.getenv('BACKEND_URL', 'http://backend:8000')
+    try:
+        r = _req.post(f'{BACKEND}/api/v1/holds/{hold_id}/resume-recap/', timeout=5)
+        if r.status_code == 200:
+            await update.message.reply_text(f"▶️ Recap resumed for Hold #{hold_id} — keepalive restarted.")
+        else:
+            await update.message.reply_text(f"❌ Failed: {r.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/pay <hold_id> — trigger the local browser agent to open Chrome and complete checkout for this hold."""
+    import requests as _req
+    import base64 as _b64
+    from django.core.cache import cache
+
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text(
+            "Usage: `/pay <hold_id>`\n\nTells the browser agent on your machine to open Chrome and complete checkout.",
+            parse_mode='Markdown'
+        )
+        return
+
+    hold_id = int(args[0])
+    from asgiref.sync import sync_to_async
+    from monitors.models import HeldSlot
+
+    @sync_to_async
+    def process_payment_request(hid):
+        try:
+            hold = HeldSlot.objects.select_related('task').get(id=hid)
+            hold.payment_ready = True
+            hold.status = 'paying'
+            hold.save()
+            return hold, None
+        except HeldSlot.DoesNotExist:
+            return None, "Hold not found"
+        except Exception as e:
+            return None, str(e)
+
+    hold, error = await process_payment_request(hold_id)
+
+    if error:
+        await update.message.reply_text(f"❌ {error}")
+        return
+
+    await update.message.reply_text(
+        f"🌐 *Payment Signal Sent (Hold #{hold_id})*\n\n"
+        f"📅 {hold.date} {hold.slot_time} · {hold.visitors} visitors\n\n"
+        f"✅ `payment_ready` flag set in DB.\n"
+        f"✅ Remote nodriver agent will see this signal within 2-5s.\n"
+        f"✅ Auto-solving Turnstile... stand by.",
+        parse_mode='Markdown'
+    )
+
+
+async def agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/agent — admin commands to control the local browser agent.
+    Usage:
+      /agent status          — show agent status and config
+      /agent poll <seconds>  — change poll interval (e.g. /agent poll 2)
+      /agent open <hold_id>  — force open Chrome for a specific hold
+      /agent open <date> <time> <visitors>  — open Chrome for a specific slot directly
+    """
+    import requests as _req
+    from django.core.cache import cache
+
+    admin_ids = [a.strip() for a in os.getenv('ADMIN_TELEGRAM_IDS', '').split(',') if a.strip()]
+    if str(update.effective_user.id) not in admin_ids:
+        await update.message.reply_text("⛔ Admin only.")
+        return
+
+    BACKEND = os.getenv('BACKEND_URL', 'http://backend:8000')
+    args = context.args or []
+
+    if not args or args[0] == 'status':
+        # Show current config + pending queue size + online agents
+        try:
+            r = _req.get(f'{BACKEND}/api/v1/agent-config/', timeout=5)
+            cfg = r.json() if r.status_code == 200 else {}
+        except Exception:
+            cfg = {}
+        try:
+            r2 = _req.get(f'{BACKEND}/api/v1/agents/', timeout=5)
+            agents = r2.json().get('agents', {}) if r2.status_code == 200 else {}
+        except Exception:
+            agents = {}
+        pending = cache.get('browser_pending', [])
+        from monitors.models import HeldSlot
+        active_holds = HeldSlot.objects.filter(status__in=['held', 'paying']).count()
+
+        agent_lines = '\n'.join(
+            f"  • `{aid}` ({info.get('hostname','?')}) ✅ online"
+            for aid, info in agents.items()
+        ) or '  None online'
+
+        await update.message.reply_text(
+            f"🤖 *Agent Status*\n\n"
+            f"*Online agents:*\n{agent_lines}\n\n"
+            f"Pending jobs: `{len(pending)}`\n"
+            f"Active holds: `{active_holds}`\n\n"
+            f"*Commands:*\n"
+            f"`/agent open <hold_id>` — open on any free agent\n"
+            f"`/agent open <hold_id> <agent_name>` — open on specific machine\n"
+            f"`/agent open DD/MM/YYYY HH:MM visitors` — open directly\n"
+            f"`/agent poll 2` — set poll interval",
+            parse_mode='Markdown'
+        )
+
+    elif args[0] == 'poll' and len(args) >= 2:
+        try:
+            secs = max(1, int(args[1]))
+            _req.post(f'{BACKEND}/api/v1/agent-config/set/', json={'poll_interval': secs}, timeout=5)
+            await update.message.reply_text(f"✅ Agent poll interval set to `{secs}s`", parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    elif args[0] == 'open':
+        import base64 as _b64
+        if len(args) >= 2 and args[1].isdigit():
+            # /agent open <hold_id> [agent_name]
+            hold_id = int(args[1])
+            target_agent = args[2] if len(args) >= 3 else None  # optional: target specific machine
+            try:
+                r = _req.get(f'{BACKEND}/api/v1/holds/?status=all', timeout=5)
+                holds = r.json().get('results', []) if r.status_code == 200 else []
+                hold = next((h for h in holds if h['id'] == hold_id), None)
+            except Exception:
+                hold = None
+            if not hold:
+                await update.message.reply_text(f"❌ Hold #{hold_id} not found.")
+                return
+            try: _req.post(f'{BACKEND}/api/v1/holds/{hold_id}/pause-recap/', timeout=5)
+            except: pass
+            slot_info = _b64.b64encode(
+                f"{hold['date']}|{hold['slot_time']}|{hold.get('slot_id','')}|{hold['visitors']}|{hold.get('total_price','?')}".encode()
+            ).decode()
+            job = {'data': f'open_browser:{hold_id}:{slot_info}', 'user': 'Admin', 'auto': True}
+            if target_agent:
+                # Push to agent-specific queue
+                key = f'browser_pending_{target_agent}'
+                q = cache.get(key, [])
+                q.insert(0, job)
+                cache.set(key, q, timeout=300)
+                target_msg = f"on `{target_agent}`"
+            else:
+                # Push to shared queue — any free agent picks it up
+                pending = cache.get('browser_pending', [])
+                pending.insert(0, job)
+                cache.set('browser_pending', pending, timeout=300)
+                target_msg = "on first available agent"
+            await update.message.reply_text(
+                f"🌐 Chrome opening {target_msg} for Hold #{hold_id}\n"
+                f"📅 {hold['date']} {hold['slot_time']} · {hold['visitors']}v\n"
+                f"Agent picks up within ~1s.",
+                parse_mode='Markdown'
+            )
+
+        elif len(args) >= 4:
+            # /agent open DD/MM/YYYY HH:MM visitors
+            date_str, time_str, vis_str = args[1], args[2], args[3]
+            visitors = int(vis_str)
+            slot_info = _b64.b64encode(f"{date_str}|{time_str}||{visitors}|?".encode()).decode()
+            pending = cache.get('browser_pending', [])
+            pending.insert(0, {'data': f'open_browser_slot:{slot_info}', 'user': 'Admin', 'auto': True})
+            cache.set('browser_pending', pending, timeout=300)
+            await update.message.reply_text(
+                f"🌐 Chrome opening for {date_str} {time_str} · {visitors}v\n"
+                f"Agent will pick this up within 2s."
+            )
+        else:
+            await update.message.reply_text("Usage: `/agent open <hold_id>` or `/agent open DD/MM/YYYY HH:MM visitors`", parse_mode='Markdown')
+    else:
+        await update.message.reply_text(
+            "Usage:\n`/agent status`\n`/agent poll <seconds>`\n`/agent open <hold_id>`",
+            parse_mode='Markdown'
+        )
 
 
 async def setparticipants_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2326,6 +2605,7 @@ def main():
 
     # Commands
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('add', add_cmd))
     app.add_handler(CommandHandler('cancel', cancel_cmd))
     app.add_handler(CommandHandler('setprofile', setprofile_cmd))
     app.add_handler(CommandHandler('setparticipants', setparticipants_cmd))
@@ -2336,6 +2616,10 @@ def main():
     app.add_handler(CommandHandler('snipes', snipes_cmd))
     app.add_handler(CommandHandler('book', book_cmd))
     app.add_handler(CommandHandler('pending', pending_cmd))
+    app.add_handler(CommandHandler('stop_recap', stop_recap_cmd))
+    app.add_handler(CommandHandler('resume_recap', resume_recap_cmd))
+    app.add_handler(CommandHandler('pay', pay_cmd))
+    app.add_handler(CommandHandler('agent', agent_cmd))
 
     # Text input (for manual date entry, profile steps)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

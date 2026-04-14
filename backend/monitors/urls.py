@@ -8,10 +8,13 @@ from .views import (
     register_user, login_user, logout_user, verify_session,
     list_held_slots, release_held_slot, checkout_redirect, generate_realtime_epay, generate_test_profiles,
     mark_slot_paid, get_browser_trigger_group, get_browser_pending, get_buyer_profile, get_buyer_card,
+    pause_hold_recap, resume_hold_recap, get_agent_config, set_agent_config,
+    agent_heartbeat, list_agents,
 )
 from .admin_views import (
     AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet
 )
+from .views_worker import get_pending_snipes, claim_snipe, record_remote_hold, check_payment_signal
 
 router = DefaultRouter()
 router.register(r'agencies', AgencyViewSet)
@@ -47,12 +50,25 @@ urlpatterns = [
     path('holds/', list_held_slots, name='list-held-slots'),
     path('holds/<int:hold_id>/release/', release_held_slot, name='release-held-slot'),
     path('holds/<int:hold_id>/checkout/', checkout_redirect, name='checkout-redirect'),
+    path('holds/<int:hold_id>/pause-recap/', pause_hold_recap, name='pause-hold-recap'),
+    path('holds/<int:hold_id>/resume-recap/', resume_hold_recap, name='resume-hold-recap'),
     path('mark-paid/', mark_slot_paid, name='mark-slot-paid'),
     path('browser-trigger-group/', get_browser_trigger_group, name='browser-trigger-group'),
     path('browser-pending/', get_browser_pending, name='browser-pending'),
+    path('agent-config/', get_agent_config, name='agent-config'),
+    path('agent-config/set/', set_agent_config, name='set-agent-config'),
+    path('agent-heartbeat/', agent_heartbeat, name='agent-heartbeat'),
+    path('agents/', list_agents, name='list-agents'),
     path('buyer-profile/', get_buyer_profile, name='buyer-profile'),
     path('buyer-card/', get_buyer_card, name='buyer-card'),
     path('epay/generate/', generate_realtime_epay, name='generate-realtime-epay'),
     path('test/profiles/', generate_test_profiles, name='generate-test-profiles'),
+    
+    # Distributed Worker API
+    path('worker/tasks/', get_pending_snipes, name='worker-tasks'),
+    path('worker/claim/<int:task_id>/', claim_snipe, name='worker-claim'),
+    path('worker/hold/record/', record_remote_hold, name='worker-hold-record'),
+    path('worker/hold/<int:hold_id>/signal/', check_payment_signal, name='worker-hold-signal'),
+
     path('', include(router.urls)),
 ]

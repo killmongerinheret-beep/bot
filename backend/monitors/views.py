@@ -926,19 +926,120 @@ def get_browser_trigger_group(request):
     return Response({'chat_id': None, 'title': None})
 
 
+@api_view(['POST'])
+def agent_heartbeat(request):
+    """Agent registers itself as online. Stores in Redis with 60s TTL."""
+    from django.core.cache import cache
+    agent_id = request.data.get('agent_id', 'unknown')
+    hostname = request.data.get('hostname', '')
+    import time as _t
+    agents = cache.get('online_agents', {})
+    agents[agent_id] = {'hostname': hostname, 'last_seen': _t.time()}
+    cache.set('online_agents', agents, timeout=None)
+    return Response({'ok': True})
+
+
+@api_view(['GET'])
+def list_agents(request):
+    """List all agents that have sent a heartbeat in the last 60s."""
+    from django.core.cache import cache
+    import time as _t
+    agents = cache.get('online_agents', {})
+    now = _t.time()
+    online = {k: v for k, v in agents.items() if now - v.get('last_seen', 0) < 60}
+    return Response({'agents': online})
+
+
 @api_view(['GET'])
 def get_browser_pending(request):
     """
-    Return pending browser open requests (button clicks from Telegram).
-    Local agent polls this every 5s and pops items to process.
+    Return pending browser open requests for this specific agent.
+    Supports ?agent_id=<name> to get only jobs targeted at this machine.
+    Falls back to untagged jobs if no targeted jobs exist.
+    Supports ?wait=1 for long-polling (blocks up to 8s).
     """
     from django.core.cache import cache
-    pending = cache.get('browser_pending', [])
-    if pending:
-        # Clear the list after returning
-        cache.delete('browser_pending')
-        return Response({'requests': pending})
-    return Response({'requests': []})
+    import time as _time
+
+    agent_id = request.query_params.get('agent_id', '')
+    wait = request.query_params.get('wait', '0') == '1'
+    deadline = _time.time() + 8 if wait else _time.time()
+
+    while True:
+        # Check agent-specific queue first
+        if agent_id:
+            key = f'browser_pending_{agent_id}'
+            targeted = cache.get(key, [])
+            if targeted:
+                cache.delete(key)
+                return Response({'requests': targeted})
+
+        # Fall back to untagged shared queue
+        pending = cache.get('browser_pending', [])
+        if pending:
+            cache.delete('browser_pending')
+            return Response({'requests': pending})
+
+        if _time.time() >= deadline:
+            return Response({'requests': []})
+        _time.sleep(0.5)
+
+
+@api_view(['GET'])
+def get_agent_config(request):
+    """Return runtime config for the local agent (poll interval, etc.)."""
+    from django.core.cache import cache
+    config = cache.get('agent_config', {})
+    return Response({
+        'poll_interval': config.get('poll_interval', 2),
+        'agent_id': config.get('agent_id', ''),
+    })
+
+
+@api_view(['POST'])
+def set_agent_config(request):
+    """Admin endpoint to update agent runtime config."""
+    from django.core.cache import cache
+    config = cache.get('agent_config', {})
+    if 'poll_interval' in request.data:
+        config['poll_interval'] = int(request.data['poll_interval'])
+    cache.set('agent_config', config, timeout=None)
+    return Response({'success': True, 'config': config})
+
+
+@api_view(['POST'])
+def pause_hold_recap(request, hold_id):
+    """
+    Pause keepalive for a specific hold — called by local agent before clicking BUY.
+    Prevents the Celery keepalive from sending a recap while the browser is mid-checkout.
+    """
+    from django.core.cache import cache
+    from .models import HeldSlot
+    try:
+        hold = HeldSlot.objects.get(id=hold_id)
+    except HeldSlot.DoesNotExist:
+        return Response({'error': 'Hold not found'}, status=404)
+    # Pause for 15 minutes — enough time to complete checkout
+    cache.set(f'hold_recap_paused:{hold_id}', True, timeout=900)
+    hold.status = 'paying'
+    hold.save(update_fields=['status'])
+    return Response({'success': True, 'hold_id': hold_id, 'paused_for_seconds': 900})
+
+
+@api_view(['POST'])
+def resume_hold_recap(request, hold_id):
+    """Resume keepalive for a hold (e.g. if checkout failed)."""
+    from django.core.cache import cache
+    from .models import HeldSlot
+    try:
+        hold = HeldSlot.objects.get(id=hold_id)
+    except HeldSlot.DoesNotExist:
+        return Response({'error': 'Hold not found'}, status=404)
+    cache.delete(f'hold_recap_paused:{hold_id}')
+    if hold.status == 'paying':
+        hold.status = 'held'
+        hold.save(update_fields=['status'])
+    return Response({'success': True, 'hold_id': hold_id})
 
 
 @api_view(['GET'])
