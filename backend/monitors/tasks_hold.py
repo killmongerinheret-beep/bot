@@ -121,9 +121,36 @@ def auto_hold_slot(task_id, date, slot_id, slot_time, ticket_id, ticket_name, vi
         return f"Held #{held.id} | {date} {slot_time}"
 
     if tier == 'snipe':
-        # Silent hold, then attempt auto-pay
-        result = _attempt_snipe(task, held)
-        return f"Snipe: {result}"
+        checkout_method = getattr(task, 'checkout_method', 'api')
+        if checkout_method == 'playwright':
+            # Push to browser_pending — local agent opens Chrome
+            import base64 as _b64
+            from django.core.cache import cache as _cache
+            slot_info = _b64.b64encode(
+                f"{date}|{slot_time}|{held.slot_id}|{held.visitors}|{held.total_price}|{held.adult_count}|{held.child_count}".encode()
+            ).decode()
+            job = {
+                'data': f'open_browser:{held.id}:{slot_info}',
+                'user': f'Auto-snipe task #{task.id}',
+                'auto': True,
+            }
+            agent_target = getattr(task, 'agent_target', None)
+            if agent_target:
+                key = f'browser_pending_{agent_target}'
+                q = _cache.get(key, [])
+                q.insert(0, job)
+                _cache.set(key, q, timeout=300)
+                logger.info(f"  📲 Browser job queued for agent '{agent_target}'")
+            else:
+                pending = _cache.get('browser_pending', [])
+                pending.insert(0, job)
+                _cache.set('browser_pending', pending, timeout=300)
+                logger.info(f"  📲 Browser job queued for any agent")
+            return f"Playwright snipe queued: Hold #{held.id} | {date} {slot_time}"
+        else:
+            # API snipe — use 2captcha + card
+            result = _attempt_snipe(task, held)
+            return f"Snipe: {result}"
 
     return "Unknown tier"
 

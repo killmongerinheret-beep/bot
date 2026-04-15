@@ -88,6 +88,40 @@ last_update_id = 0
 processed_slots = set()
 
 
+def _kill_vatican_chrome():
+    """
+    Kill only Chrome processes using the Vatican profile directory.
+    Does NOT kill other Chrome windows the user has open.
+    Uses WMIC to find Chrome processes with our profile path in their command line.
+    """
+    try:
+        profile_path = CHROME_PROFILE.replace('\\', '\\\\')
+        # Find Chrome PIDs using our specific profile
+        result = subprocess.run(
+            ['wmic', 'process', 'where',
+             f'name="chrome.exe" and commandline like "%{CHROME_PROFILE}%"',
+             'get', 'processid', '/format:value'],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('ProcessId=') and line[10:].strip().isdigit():
+                pids.append(line[10:].strip())
+        if pids:
+            for pid in pids:
+                subprocess.run(['taskkill', '/F', '/PID', pid], capture_output=True, timeout=3)
+            logger.info(f"Killed Vatican Chrome PIDs: {pids}")
+        else:
+            # Fallback: just delete the lockfile so next launch works
+            lockfile = os.path.join(CHROME_PROFILE, 'lockfile')
+            if os.path.exists(lockfile):
+                try: os.remove(lockfile)
+                except: pass
+    except Exception as e:
+        logger.debug(f"_kill_vatican_chrome: {e}")
+
+
 def send_telegram(chat_id: str, msg: str, reply_markup=None):
     """Send message to a Telegram chat."""
     payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'Markdown'}
@@ -245,8 +279,8 @@ async def open_checkout(slot: dict):
     epay_result = {}
     start_time = time.time()
 
-    # Kill leftover Chrome
-    subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe', '/T'], capture_output=True, timeout=5)
+    # Kill only Chrome using the Vatican profile (not all Chrome windows)
+    _kill_vatican_chrome()
     await asyncio.sleep(0.5)
 
     # Clean stale lockfile
@@ -692,7 +726,7 @@ async def open_checkout(slot: dict):
     finally:
         try: browser.stop()
         except: pass
-        try: subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe', '/T'], capture_output=True)
+        try: _kill_vatican_chrome()
         except: pass
         logger.info("Browser closed.")
 
@@ -844,8 +878,7 @@ if __name__ == '__main__':
     # Kill Chrome when this script exits for any reason
     def _kill_chrome():
         try:
-            subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe', '/T'],
-                           capture_output=True, timeout=5)
+            _kill_vatican_chrome()
         except Exception:
             pass
     atexit.register(_kill_chrome)
