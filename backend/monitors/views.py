@@ -1008,7 +1008,119 @@ def set_agent_config(request):
 
 
 @api_view(['POST'])
-def pause_hold_recap(request, hold_id):
+def remote_snipe(request):
+    """
+    Called by Android/remote agents to complete a full reservation server-side.
+    The agent does: hold (recap) → calls this endpoint → gets epay URL back.
+    
+    This endpoint:
+    1. Solves Turnstile via 2captcha (~30s)
+    2. Calls /api/visit/reservation with the token
+    3. Returns the epay URL to the agent
+    
+    Body: { hold_id: int }
+    """
+    from .models import HeldSlot, BuyerProfile
+    from .epay_ssl import make_vatican_session
+    from .turnstile_pool import get_token_sync
+    import json as _json
+
+    hold_id = request.data.get('hold_id')
+    if not hold_id:
+        return Response({'error': 'hold_id required'}, status=400)
+
+    try:
+        held = HeldSlot.objects.get(id=hold_id)
+    except HeldSlot.DoesNotExist:
+        return Response({'error': 'Hold not found'}, status=404)
+
+    try:
+        profile = BuyerProfile.objects.get(agency=held.task.agency)
+    except BuyerProfile.DoesNotExist:
+        return Response({'error': 'No buyer profile'}, status=400)
+
+    # Solve Turnstile (~30s)
+    token = get_token_sync()
+    if not token:
+        return Response({'error': 'Could not solve Turnstile — check 2captcha balance'}, status=503)
+
+    # Restore session with held slot's cookies
+    notes = {}
+    try:
+        notes = _json.loads(held.notes or '{}')
+    except Exception:
+        pass
+
+    s = make_vatican_session(
+        jsessionid=held.jsessionid,
+        ticketmv=held.ticketmv,
+        serverid=notes.get('serverid', '')
+    )
+
+    # Build participant list
+    participants = []
+    try:
+        task_parts = _json.loads(held.task.participants_json or '[]')
+        for p in task_parts[:held.visitors]:
+            participants.append({
+                "surname": p.get('last_name', profile.last_name),
+                "name": p.get('first_name', profile.first_name),
+                "id": 60, "ticketType": "intero", "services": [58]
+            })
+    except Exception:
+        pass
+    while len(participants) < held.visitors:
+        participants.append({
+            "surname": profile.last_name, "name": profile.first_name,
+            "id": 60, "ticketType": "intero", "services": [58]
+        })
+
+    BASE_V = 'https://tickets.museivaticani.va'
+    res_body = {
+        "recaptcha": token,
+        "lang": "it",
+        "recapId": held.recap_id,
+        "visitorNum": held.visitors,
+        "visitId": str(held.slot_id),
+        "visitTypeId": int(held.ticket_id),
+        "tickets": [
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(held.adult_count)},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(held.child_count)},
+        ],
+        "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": held.visitors}],
+        "representativeUser": profile.to_representative_user(),
+        "participantUser": participants,
+        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+    }
+
+    HC = {
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': f'{BASE_V}/home/checkout',
+        'Origin': BASE_V,
+    }
+
+    try:
+        r = s.post(f'{BASE_V}/api/visit/reservation', json=res_body, headers=HC, timeout=20, allow_redirects=False)
+        if r.status_code == 200:
+            data = r.json()
+            epay = data.get('epay', {})
+            epay_url = epay.get('url', '')
+            reference = data.get('referenceOrder', '')
+            held.status = 'paying'
+            held.payment_url = epay_url
+            held.save(update_fields=['status', 'payment_url'])
+            return Response({
+                'success': True,
+                'epay_url': epay_url,
+                'reference': reference,
+                'total': data.get('total'),
+            })
+        else:
+            return Response({'error': f'Reservation failed: {r.status_code}', 'body': r.text[:300]}, status=400)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
     """
     Pause keepalive for a specific hold — called by local agent before clicking BUY.
     Prevents the Celery keepalive from sending a recap while the browser is mid-checkout.

@@ -9,7 +9,7 @@ from .views import (
     list_held_slots, release_held_slot, checkout_redirect, generate_realtime_epay, generate_test_profiles,
     mark_slot_paid, get_browser_trigger_group, get_browser_pending, get_buyer_profile, get_buyer_card,
     pause_hold_recap, resume_hold_recap, get_agent_config, set_agent_config,
-    agent_heartbeat, list_agents,
+    agent_heartbeat, list_agents, remote_snipe,
 )
 from .admin_views import (
     AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet
@@ -59,6 +59,7 @@ urlpatterns = [
     path('agent-config/set/', set_agent_config, name='set-agent-config'),
     path('agent-heartbeat/', agent_heartbeat, name='agent-heartbeat'),
     path('agents/', list_agents, name='list-agents'),
+    path('remote-snipe/', remote_snipe, name='remote-snipe'),
     path('buyer-profile/', get_buyer_profile, name='buyer-profile'),
     path('buyer-card/', get_buyer_card, name='buyer-card'),
     path('epay/generate/', generate_realtime_epay, name='generate-realtime-epay'),

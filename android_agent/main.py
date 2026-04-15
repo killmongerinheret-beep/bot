@@ -245,6 +245,56 @@ def open_chrome_android(url: str):
     return False
 
 
+def complete_reservation_via_server(slot: dict) -> bool:
+    """
+    Complete the full reservation server-side — no browser on Android needed.
+    
+    Flow:
+    1. Android held the slot via recap (pure API)
+    2. Android calls this → server solves Turnstile via 2captcha (~30s)
+    3. Server calls /api/visit/reservation with token
+    4. Server returns epay URL
+    5. Android sends epay URL to Telegram
+    """
+    hold_id = slot.get('id')
+    if not hold_id or hold_id == 'test':
+        logger.warning("No hold_id — cannot complete reservation server-side")
+        return False
+
+    logger.info(f"Requesting server-side reservation for Hold #{hold_id}...")
+    send_telegram(f"🔐 *Solving Turnstile for Hold #{hold_id}*\nThis takes ~30s via 2captcha...")
+
+    try:
+        r = requests.post(
+            f'{SERVER_URL}/api/v1/remote-snipe/',
+            json={'hold_id': int(hold_id)},
+            timeout=120,  # 2captcha can take up to 2 min
+            proxies=PROXIES
+        )
+        if r.status_code == 200:
+            data = r.json()
+            epay_url = data.get('epay_url', '')
+            reference = data.get('reference', '')
+            total = data.get('total', '?')
+            logger.info(f"✅ Reservation complete! ref={reference}, epay={epay_url[:60]}")
+            send_telegram(
+                f"✅ *Vatican ticket booked via Android `{AGENT_ID}`!*\n\n"
+                f"📅 {slot.get('date')} {slot.get('slot_time')} | 👥 {slot.get('visitors')}v | €{total}\n"
+                f"🔖 Ref: `{reference}`\n\n"
+                f"💳 *Pay here:*\n{epay_url}"
+            )
+            return True
+        else:
+            error = r.json().get('error', r.text[:100])
+            logger.error(f"Remote snipe failed: {r.status_code} — {error}")
+            send_telegram(f"❌ Reservation failed on `{AGENT_ID}`: {error}")
+            return False
+    except Exception as e:
+        logger.error(f"Remote snipe exception: {e}")
+        send_telegram(f"❌ Reservation error on `{AGENT_ID}`: {e}")
+        return False
+
+
 def open_checkout_android(slot: dict):
     """
     Open Vatican checkout in Chrome on Android.
@@ -395,9 +445,12 @@ def process_job(job: dict):
         logger.warning("Could not parse job — skipping")
         return
 
-    # On Android: open Chrome for manual checkout
-    # The hold is already created server-side, we just need to complete payment
-    open_checkout_android(slot)
+    # Try server-side reservation first (no browser needed — server solves Turnstile)
+    # Falls back to opening Chrome on Android if server-side fails
+    success = complete_reservation_via_server(slot)
+    if not success:
+        logger.info("Server-side reservation failed — opening Chrome on Android as fallback")
+        open_checkout_android(slot)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
