@@ -391,21 +391,24 @@ def sweep_monitor_dates():
     """
     import os
 
-    # Get target dates from env or default to current + next month
+    # Get target dates from env or auto-generate from active snipe tasks
     target_dates_str = os.getenv('SWEEP_TARGET_DATES', '')
     if target_dates_str:
         dates = [d.strip() for d in target_dates_str.split(',') if d.strip()]
     else:
-        # Auto-generate: all days in April + May 2026
-        dates = []
-        for month in [4, 5]:
-            for day in range(1, 32):
+        # Auto-generate from active snipe/notify tasks — covers ALL task dates
+        from .models import MonitorTask
+        task_dates = set()
+        for task in MonitorTask.objects.filter(is_active=True).only('dates'):
+            for d in (task.dates or []):
                 try:
-                    d = datetime(2026, month, day)
-                    if d.date() >= datetime.now().date():
-                        dates.append(d.strftime('%d/%m/%Y'))
-                except ValueError:
+                    # Convert YYYY-MM-DD to DD/MM/YYYY
+                    dt = datetime.strptime(d, '%Y-%m-%d')
+                    if dt.date() >= datetime.now().date():
+                        task_dates.add(dt.strftime('%d/%m/%Y'))
+                except Exception:
                     pass
+        dates = sorted(task_dates)
 
     # Separate dates by priority
     high_priority = []
@@ -441,31 +444,45 @@ def sweep_monitor_dates():
     new_openings = 0
 
     for date, weekday in dates_to_check:
-        # Quick check with 2 visitors (fastest)
-        s, ticket_id, open_slots = _search_and_timeavail(date, 2)
-        if not open_slots:
+        # Check with visitor counts from actual tasks for this date
+        from .models import MonitorTask
+        visitor_counts = set()
+        for task in MonitorTask.objects.filter(is_active=True, dates__contains=[
+            datetime.strptime(date, '%d/%m/%Y').strftime('%Y-%m-%d')
+        ]).only('visitors'):
+            visitor_counts.add(task.visitors)
+        if not visitor_counts:
+            visitor_counts = {1}  # fallback
+
+        all_open_slots = []
+        for vis in visitor_counts:
+            s, ticket_id, open_slots = _search_and_timeavail(date, vis)
+            if open_slots:
+                all_open_slots.extend(open_slots)
+
+        if not all_open_slots:
             continue
 
-        for slot in open_slots:
+        for slot in all_open_slots:
             slot_id = slot.get('id', '')
             slot_time = slot.get('time', '')
 
-            # Check if already notified today
-            notify_key = f"sweep_notified:{date}"
+            # Check if already notified in last 5 minutes (not permanent)
+            notify_key = f"sweep_notified:{date}:{slot_time}"
             if cache.get(notify_key):
                 continue
+            cache.set(notify_key, True, timeout=300)  # 5 min cooldown
 
             logger.info(f"🆕 NEW OPENING [{weekday}]: {date} {slot_time} | id={slot_id} | avail={slot.get('availability')}")
             new_openings += 1
 
-            # Fire notification task immediately
             sweep_notify_slot.delay(
                 date=date,
                 slot_id=str(slot_id),
                 slot_time=slot_time,
             )
 
-        time.sleep(0.2)  # small delay between dates
+        time.sleep(0.2)
 
     if new_openings:
         logger.info(f"🚀 SWEEP: Found {new_openings} new openings — notifications dispatched")

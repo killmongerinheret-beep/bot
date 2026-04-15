@@ -1182,46 +1182,75 @@ async def do_create_monitor(query, context):
         except Exception as e:
             logger.warning(f"Could not trigger immediate check: {e}")
 
-        # For snipe tasks: also immediately check if slot is already available
+        # For snipe tasks: immediately check if slot is already available and hold it NOW
         if tier == 'snipe':
             try:
-                from monitors.tasks_sweep import sweep_notify_slot
                 import requests as _req
+                from asgiref.sync import sync_to_async as _s2a
 
-                # Quick check for the target date/times — direct, no proxy
                 s = _req.Session()
-                H = {'Accept':'application/json','X-Requested-With':'XMLHttpRequest','Referer':'https://tickets.museivaticani.va/'}
+                H = {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest',
+                     'Referer': 'https://tickets.museivaticani.va/'}
                 year, month, day = date.split('-')
                 d_api = f"{day}/{month}/{year}"
 
                 r = s.get('https://tickets.museivaticani.va/api/search/resultPerTag', params={
-                    'lang':'it','visitorNum':str(visitors),'visitDate':d_api,
-                    'area':'1','who':'','page':'0','tag':'MV-Biglietti'
+                    'lang': 'it', 'visitorNum': str(visitors), 'visitDate': d_api,
+                    'area': '1', 'who': '', 'page': '0', 'tag': 'MV-Biglietti'
                 }, headers=H, timeout=8)
+
                 if r.status_code == 200:
-                    ticket = next((v for v in r.json().get('visits',[])
-                                   if 'musei vaticani' in v.get('name','').lower()
-                                   and 'ingresso' in v.get('name','').lower()
-                                   and v.get('availability') in ('AVAILABLE','LOW_AVAILABILITY')), None)
+                    ticket = next((v for v in r.json().get('visits', [])
+                                   if 'musei vaticani' in v.get('name', '').lower()
+                                   and 'ingresso' in v.get('name', '').lower()
+                                   and v.get('availability') in ('AVAILABLE', 'LOW_AVAILABILITY')), None)
                     if ticket:
                         tid = ticket['id']
                         r2 = s.get('https://tickets.museivaticani.va/api/visit/timeavail', params={
-                            'lang':'it','visitLang':'','visitTypeId':str(tid),
-                            'visitorNum':str(visitors),'visitDate':d_api,
+                            'lang': 'it', 'visitLang': '', 'visitTypeId': str(tid),
+                            'visitorNum': str(visitors), 'visitDate': d_api,
                         }, headers=H, timeout=8)
                         if r2.status_code == 200:
-                            for sl in r2.json().get('timetable',[]):
-                                if sl.get('availability') not in ('SOLD_OUT','NOT_ALLOWED'):
-                                    if not preferred_times or sl.get('time') in preferred_times:
-                                        logger.info(f"Snipe task #{task.id}: slot available! {d_api} {sl['time']} — triggering in background")
-                                        # Fire in background — don't block the bot response
-                                        import asyncio as _asyncio
-                                        _asyncio.create_task(
-                                            sync_to_async(sweep_notify_slot)(
-                                                date=d_api, slot_id=str(sl['id']), slot_time=sl['time']
-                                            )
-                                        )
-                                        break
+                            open_slots = [sl for sl in r2.json().get('timetable', [])
+                                          if sl.get('availability') not in ('SOLD_OUT', 'NOT_ALLOWED')]
+                            # Filter to preferred times
+                            if preferred_times:
+                                matching = [sl for sl in open_slots if sl.get('time') in preferred_times]
+                            else:
+                                matching = open_slots
+
+                            if matching:
+                                best = matching[0]
+                                slot_time_found = best.get('time')
+                                slot_id_found = str(best.get('id', ''))
+                                logger.info(f"⚡ Immediate snipe: task #{task.id} — slot {d_api} {slot_time_found} available NOW — holding directly")
+
+                                # Directly trigger auto_hold_slot for THIS task (bypasses cooldowns)
+                                from monitors.tasks_hold import auto_hold_slot
+                                await _s2a(auto_hold_slot.delay)(
+                                    task_id=task.id,
+                                    date=d_api,
+                                    slot_id=slot_id_found,
+                                    slot_time=slot_time_found,
+                                    ticket_id=str(tid),
+                                    ticket_name="Musei Vaticani - Biglietti d'ingresso",
+                                    visitors=visitors,
+                                )
+                                await query.edit_message_text(
+                                    f"⚡ *Slot found immediately!*\n\n"
+                                    f"📅 {d_api} {slot_time_found}\n"
+                                    f"👥 {visitors} visitors\n\n"
+                                    f"🔒 Holding slot now... Chrome will open on your machine shortly.",
+                                    parse_mode='Markdown',
+                                    reply_markup=kb_back()
+                                )
+                                return  # skip the normal "monitor created" message
+                            else:
+                                logger.info(f"Snipe task #{task.id}: slots open on {d_api} but none match preferred times {preferred_times}")
+                        else:
+                            logger.info(f"Snipe task #{task.id}: timeavail {r2.status_code} for {d_api}")
+                    else:
+                        logger.info(f"Snipe task #{task.id}: no available ticket on {d_api}")
             except Exception as e:
                 logger.warning(f"Immediate snipe check failed: {e}")
 

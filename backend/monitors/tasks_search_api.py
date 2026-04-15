@@ -230,7 +230,10 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             
             # ✅ SMART NOTIFICATION: Only alert on state CHANGE (closed → open)
             should_alert = status_changed_to_open and not is_first_check
-            should_trigger_hold = is_now_available and (status_changed_to_open or is_first_check)
+            # For snipe tasks: ALWAYS try to hold when slots are available (not just on state change)
+            # This handles the case where the task was created when slots were already open
+            is_snipe = task.tier in ('hold', 'snipe')
+            should_trigger_hold = is_now_available and (status_changed_to_open or is_first_check or is_snipe)
             
             # 🛡️ SPAM GUARD: Cooldown key (stable - no ticket_id)
             alert_cooldown_key = f"alert_cooldown:{task.id}:{date}"
