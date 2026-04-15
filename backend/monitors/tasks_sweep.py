@@ -99,57 +99,59 @@ def _search_and_timeavail(date, visitors, proxy=None):
 
 
 def _notify_slot_available(date, slot_time):
-    """Send simple availability notification to ALL approved groups (ONCE per date per day)."""
-    from .models import TelegramGroup
+    """Send availability notification ONLY to groups whose tasks monitor this date/time."""
+    from .models import TelegramGroup, MonitorTask
     from .notification_utils import send_telegram_signal
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    # Check if we already notified for this date today
-    notify_key = f"sweep_notified:{date}"
-    if cache.get(notify_key):
-        logger.debug(f"Already notified for {date} today — skipping")
-        return
-
     now = datetime.now(ZoneInfo('Europe/Rome')).strftime('%H:%M:%S')
 
-    # Parse month from date (DD/MM/YYYY)
     try:
         month_num = int(date.split('/')[1])
         month_name = {4: 'April', 5: 'May', 6: 'June'}.get(month_num, date)
     except Exception:
         month_name = 'Vatican'
 
+    # Find agencies that have tasks monitoring this date
+    try:
+        year, month, day = date.split('/')
+        date_iso = f"20{year[-2:]}-{month}-{day}" if len(year) == 2 else f"{year}-{month}-{day}"
+    except Exception:
+        date_iso = date
+
+    # Get agency IDs that have active tasks for this date
+    relevant_agency_ids = set(
+        MonitorTask.objects.filter(
+            is_active=True,
+            dates__contains=[date_iso]
+        ).values_list('agency_id', flat=True)
+    )
+
+    if not relevant_agency_ids:
+        logger.debug(f"No tasks monitoring {date} — skipping notification")
+        return
+
     msg = (
         f"🎉 {month_name.upper()} TICKETS AVAILABLE!\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📅 Date: {date}\n"
         f"⏰ Time: {slot_time}\n"
-        f"🎫 Musei Vaticani - Standard Entry\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔗 Book now:\n"
-        f"https://tickets.museivaticani.va/\n\n"
-        f"⚡ Act fast — slots fill quickly!\n\n"
+        f"🎫 Musei Vaticani - Standard Entry\n\n"
+        f"⚡ Act fast — slots fill quickly!\n"
         f"🕐 Detected: {now} Rome time"
     )
 
-    # Send to ALL approved groups across all agencies (ONCE per date)
-    all_groups = TelegramGroup.objects.filter(
-        status='approved', notification_enabled=True
+    # Only send to groups linked to relevant agencies
+    groups = TelegramGroup.objects.filter(
+        status='approved',
+        agency_id__in=relevant_agency_ids
     )
     sent = 0
-    for g in all_groups:
+    for g in groups:
         if send_telegram_signal(g.chat_id, msg):
             sent += 1
 
-    # Set cache to prevent re-notification for this date (expires at midnight)
-    from datetime import datetime as dt
-    now_dt = dt.now(ZoneInfo('Europe/Rome'))
-    midnight = now_dt.replace(hour=23, minute=59, second=59)
-    seconds_until_midnight = int((midnight - now_dt).total_seconds())
-    cache.set(notify_key, True, timeout=max(seconds_until_midnight, 3600))
-
-    logger.info(f"📢 Availability alert sent to {sent}/{all_groups.count()} groups for {date}")
+    logger.info(f"📢 Alert sent to {sent} groups (agencies: {relevant_agency_ids}) for {date} {slot_time}")
 
 
 @shared_task(name="sweep_notify_slot", queue="snipe")
