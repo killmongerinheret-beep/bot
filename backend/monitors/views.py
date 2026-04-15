@@ -1139,6 +1139,21 @@ def remote_snipe(request):
 
 
 @api_view(['POST'])
+def pause_hold_recap(request, hold_id):
+    """Pause keepalive for a specific hold — called by local agent before clicking BUY."""
+    from django.core.cache import cache
+    from .models import HeldSlot
+    try:
+        hold = HeldSlot.objects.get(id=hold_id)
+    except HeldSlot.DoesNotExist:
+        return Response({'error': 'Hold not found'}, status=404)
+    cache.set(f'hold_recap_paused:{hold_id}', True, timeout=900)
+    hold.status = 'paying'
+    hold.save(update_fields=['status'])
+    return Response({'success': True, 'hold_id': hold_id, 'paused_for_seconds': 900})
+
+
+@api_view(['POST'])
 def resume_hold_recap(request, hold_id):
     """Resume keepalive for a hold (e.g. if checkout failed)."""
     from django.core.cache import cache
