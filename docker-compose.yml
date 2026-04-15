@@ -42,7 +42,7 @@ services:
   worker_vatican:
     build: .
     restart: always
-    command: celery -A backend.core worker -l info -Q vatican,celery
+    command: celery -A backend.core worker -l info -Q snipe,vatican,celery --concurrency=16
     volumes:
       - .:/app
     environment:

@@ -152,7 +152,7 @@ def _notify_slot_available(date, slot_time):
     logger.info(f"📢 Availability alert sent to {sent}/{all_groups.count()} groups for {date}")
 
 
-@shared_task(name="sweep_notify_slot", queue="vatican")
+@shared_task(name="sweep_notify_slot", queue="snipe")
 def sweep_notify_slot(date, slot_id, slot_time):
     """
     Slot detected by sweep monitor.

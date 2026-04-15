@@ -72,7 +72,7 @@ def keepalive_held_slots():
     return f"Keepalive: {ok} alive, {expired} expired"
 
 
-@shared_task(name="auto_hold_slot", queue="vatican")
+@shared_task(name="auto_hold_slot", queue="snipe")
 def auto_hold_slot(task_id, date, slot_id, slot_time, ticket_id, ticket_name, visitors):
     """
     Triggered when a slot opens.

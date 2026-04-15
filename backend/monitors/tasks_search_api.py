@@ -282,11 +282,13 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
                         slot_time = best.get('time')
                         slot_id = best.get('id')
                         if slot_id:
-                            hold_cooldown_key = f"hold_cooldown:{task.id}:{date}:{slot_id}"
+                            # Cooldown by task+date+time (not slot_id — Vatican rotates IDs)
+                            # 55 min = Vatican hold duration, prevents re-firing while held
+                            hold_cooldown_key = f"hold_cooldown:{task.id}:{date}:{slot_time}"
                             if cache.get(hold_cooldown_key):
                                 logger.info(f"⏳ SUPPRESSED HOLD: cooldown active for task #{task.id} {date} {slot_time}")
                             else:
-                                cache.set(hold_cooldown_key, "sent", timeout=600)
+                                cache.set(hold_cooldown_key, "sent", timeout=3300)  # 55 min
                                 auto_hold_slot.delay(
                                     task_id=task.id,
                                     date=date,
