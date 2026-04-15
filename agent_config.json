@@ -1,0 +1,17 @@
+{
+  "server_url": "https://hydrabot.it",
+  "bot_token": "8385485516:AAF8GjzusdFNBekC8cJrTk5wGVnZtDdhAhY",
+  "admin_chat_id": "6189445236",
+  "trigger_group": "-5245239270",
+  "agent_id": "my-pc",
+  "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "chrome_profile": "C:\\Users\\YourName\\vatican_chrome_profile",
+  "poll_interval": 2,
+  "browser_timeout": 1200,
+  "first_name": "Mario",
+  "last_name": "Rossi",
+  "email": "mario.rossi@example.com",
+  "phone": "3401234567",
+  "city": "Roma",
+  "country": "Italy"
+}

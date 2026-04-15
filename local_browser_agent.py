@@ -36,40 +36,56 @@ logger = logging.getLogger(__name__)
 
 import platform as _platform
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
-SERVER_URL = 'https://hydrabot.it'          # your server
-BOT_TOKEN = '8385485516:AAF8GjzusdFNBekC8cJrTk5wGVnZtDdhAhY'
-ADMIN_CHAT_ID = '6189445236'
-POLL_INTERVAL = 2   # seconds between checks (reduced from 10 for near-instant response)
-BROWSER_TIMEOUT = 20 * 60  # 20 minutes in seconds
+# ── Load config from agent_config.json if it exists next to the exe ──────────
+def _load_config():
+    """Load config from agent_config.json in same dir as the exe/script."""
+    import json as _json
+    # When frozen as exe, use exe directory; otherwise script directory
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    cfg_path = os.path.join(base, 'agent_config.json')
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, 'r') as f:
+                return _json.load(f)
+        except Exception:
+            pass
+    return {}
+
+_cfg = _load_config()
+
+# ── CONFIG — overridable via agent_config.json or CLI args ───────────────────
+SERVER_URL            = _cfg.get('server_url',   'https://hydrabot.it')
+BOT_TOKEN             = _cfg.get('bot_token',    '8385485516:AAF8GjzusdFNBekC8cJrTk5wGVnZtDdhAhY')
+ADMIN_CHAT_ID         = _cfg.get('admin_chat_id','6189445236')
+TRIGGER_GROUP_CHAT_ID = _cfg.get('trigger_group','-5245239270')
+POLL_INTERVAL         = int(_cfg.get('poll_interval', 2))
+BROWSER_TIMEOUT       = int(_cfg.get('browser_timeout', 20 * 60))
+AGENT_ID              = _cfg.get('agent_id', os.getenv('AGENT_ID', _platform.node()))
+CHROME_PATH           = _cfg.get('chrome_path', r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+CHROME_PROFILE        = _cfg.get('chrome_profile', os.path.join(os.path.expanduser('~'), 'vatican_chrome_profile'))
+
 BASE = 'https://tickets.museivaticani.va'
 
-# Agent identity — set via --agent flag or defaults to hostname
-# This is how you target a specific machine from Telegram: /agent open <hold_id> --target <name>
-AGENT_ID = os.getenv('AGENT_ID', _platform.node())  # e.g. "DESKTOP-ABC123" or "windows-main"
-
-TRIGGER_GROUP_CHAT_ID = '-5245239270'  # WOR Bot group
-
-# Profile (same as BuyerProfile in DB)
+# Profile fallback (overridden by server's /api/v1/buyer-profile/ at runtime)
 PROFILE = {
-    'first_name': 'Great',
-    'last_name': 'Aby',
-    'email': 'wondersoffcity@gmail.com',
-    'phone': '3517869798',
-    'city': 'Roma',
-    'country': 'Italy',
-    'gender': 'M',
-    'birth_date': {'year': 2000, 'month': 'JUL', 'day': 25},
-    'language': 'en',
+    'first_name': _cfg.get('first_name', 'Mario'),
+    'last_name':  _cfg.get('last_name',  'Rossi'),
+    'email':      _cfg.get('email',      'mario.rossi@example.com'),
+    'phone':      _cfg.get('phone',      '3401234567'),
+    'city':       _cfg.get('city',       'Roma'),
+    'country':    _cfg.get('country',    'Italy'),
+    'gender':     _cfg.get('gender',     'M'),
+    'birth_date': _cfg.get('birth_date', {'year': 1990, 'month': 'JAN', 'day': 1}),
+    'language':   _cfg.get('language',   'en'),
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
-CHROME_PATH = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
-# Use a persistent Chrome profile for the agent to bypass Cloudflare
-CHROME_PROFILE = r"d:\bot\vatican_chrome_profile"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36"
-last_update_id = 0      # Telegram update offset
-processed_slots = set() # track slots already notified
+last_update_id = 0
+processed_slots = set()
 
 
 def send_telegram(chat_id: str, msg: str, reply_markup=None):
