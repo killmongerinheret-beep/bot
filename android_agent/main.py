@@ -99,28 +99,78 @@ def get_jobs():
 # ── Vatican API ───────────────────────────────────────────────────────────────
 
 def get_fresh_session_and_ticket(date: str, visitors: int):
-    """Get JSESSIONID + ticket_id from Vatican Search API."""
+    """
+    Get a valid Vatican session + ticket_id using pure HTTP — no browser needed.
+    Replicates exactly what hold_manager.py does server-side.
+    
+    Vatican session flow:
+    1. GET /home  → sets JSESSIONID + ticketmv + SERVERID cookies
+    2. GET /api/search/resultPerTag  → gets fresh ticket_id for this date
+    3. Session is now valid for recap calls
+    """
     s = requests.Session()
+    # Step 1: init session (gets JSESSIONID)
     try:
-        s.get(f'{BASE}/home', timeout=8, proxies=PROXIES)
-    except Exception:
-        pass
+        s.get(f'{BASE}/home', headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        }, timeout=10, proxies=PROXIES)
+    except Exception as e:
+        logger.warning(f"Homepage init failed: {e}")
+
+    jsessionid = s.cookies.get('JSESSIONID', '')
+    logger.info(f"Session init: JSESSIONID={'✅' if jsessionid else '❌'}")
+
+    # Step 2: get fresh ticket_id
+    H = {
+        'Accept': 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': f'{BASE}/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    }
     r = s.get(f'{BASE}/api/search/resultPerTag', params={
         'lang': 'it', 'visitorNum': str(visitors), 'visitDate': date,
         'area': '1', 'who': '', 'page': '0', 'tag': 'MV-Biglietti'
-    }, headers={'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}, timeout=10, proxies=PROXIES)
+    }, headers=H, timeout=10, proxies=PROXIES)
+
     if r.status_code != 200:
+        logger.error(f"Search API {r.status_code} for {date}")
         return None, None, None
+
     ticket = next((v for v in r.json().get('visits', [])
                    if 'musei vaticani' in v.get('name', '').lower()
                    and 'ingresso' in v.get('name', '').lower()), None)
     if not ticket:
+        logger.error(f"No standard entry ticket for {date}")
         return None, None, None
-    return s, str(ticket['id']), s.cookies.get('JSESSIONID', '')
+
+    ticket_id = str(ticket['id'])
+    jsessionid = s.cookies.get('JSESSIONID', '')
+    logger.info(f"ticket_id={ticket_id}, JSESSIONID={'✅' if jsessionid else '❌'}")
+    return s, ticket_id, jsessionid
 
 
 def do_recap(session, slot_id, ticket_id, visitors, adult_count, child_count):
-    """Call Vatican recap API to lock a slot."""
+    """
+    Call Vatican /api/visit/recap to lock a slot — pure HTTP, no browser.
+    This is identical to what hold_manager.py does on the Docker server.
+    Returns recap_id on success, None on failure.
+    """
+    # First fetch services (pre-sale fees)
+    services = []
+    try:
+        r_svc = session.get(f'{BASE}/api/visit/services', params={
+            'lang': 'it', 'visitId': slot_id,
+            'visitTypeId': ticket_id, 'visitorNum': str(visitors)
+        }, headers={
+            'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest',
+            'Referer': f'{BASE}/'
+        }, timeout=10, proxies=PROXIES)
+        if r_svc.status_code == 200:
+            services = r_svc.json().get('services', []) or []
+    except Exception:
+        pass
+
     body = {
         "visitId": str(slot_id),
         "visitTypeId": int(ticket_id),
@@ -130,18 +180,37 @@ def do_recap(session, slot_id, ticket_id, visitors, adult_count, child_count):
             {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(adult_count)},
             {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": str(child_count)},
         ],
-        "additionalCosts": {
-            "service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}
-        },
-        "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}]
+        "additionalCosts": {},
+        "services": []
     }
+    # Add pre-sale fee
+    for svc in services[:1]:
+        body["additionalCosts"]["service-0"] = {
+            "id": svc.get('id', 58), "name": svc.get('name', 'Diritti di Prevendita'),
+            "price": svc.get('price', 5), "quantity": int(visitors)
+        }
+        body["services"].append({
+            "id": svc.get('id', 58), "name": svc.get('name', 'Diritti di Prevendita'),
+            "price": svc.get('price', 5), "quantity": int(visitors)
+        })
+
     try:
         r = session.post(f'{BASE}/api/visit/recap', json=body, headers={
-            'Accept': 'application/json', 'Content-Type': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest', 'Referer': f'{BASE}/'
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': f'{BASE}/',
+            'Origin': BASE,
         }, timeout=15, proxies=PROXIES)
+
         if r.status_code == 200:
-            return r.json().get('recapId') or 'ok'
+            data = r.json()
+            recap_id = data.get('recapId') or data.get('id') or 'ok'
+            total = data.get('total', '?')
+            logger.info(f"✅ Recap OK: recap_id={recap_id}, total=€{total}")
+            return recap_id
+        else:
+            logger.error(f"Recap {r.status_code}: {r.text[:150]}")
     except Exception as e:
         logger.error(f"Recap error: {e}")
     return None
@@ -248,7 +317,7 @@ class HoldWorker(threading.Thread):
         while self.running:
             time.sleep(5)
             if time.time() - last_heartbeat >= 240:  # 4 minutes
-                # Refresh ticket_id (Vatican changes IDs)
+                # Always refresh ticket_id — Vatican changes IDs frequently
                 _, fresh_tid, _ = get_fresh_session_and_ticket(self.date, self.visitors)
                 if fresh_tid:
                     ticket_id = fresh_tid
@@ -257,12 +326,22 @@ class HoldWorker(threading.Thread):
                     last_heartbeat = time.time()
                     logger.info(f"💓 Heartbeat OK: {self.date} {self.slot_time}")
                 else:
-                    logger.warning(f"Heartbeat failed — refreshing session")
+                    # Session expired — get completely fresh session
+                    logger.warning(f"Heartbeat failed — getting fresh session")
                     session, ticket_id, _ = get_fresh_session_and_ticket(self.date, self.visitors)
                     if not session:
                         logger.error(f"Session refresh failed — hold lost")
+                        send_telegram(f"❌ Hold lost on `{AGENT_ID}`: {self.date} {self.slot_time} — session expired")
                         break
-                    last_heartbeat = time.time()
+                    # Retry recap with fresh session
+                    recap_id = do_recap(session, self.slot_id, ticket_id, self.visitors, self.adult_count, self.child_count)
+                    if recap_id:
+                        last_heartbeat = time.time()
+                        logger.info(f"💓 Heartbeat recovered with fresh session")
+                    else:
+                        logger.error(f"Recap failed even with fresh session — hold lost")
+                        send_telegram(f"❌ Hold lost on `{AGENT_ID}`: {self.date} {self.slot_time}")
+                        break
 
     def stop(self):
         self.running = False
