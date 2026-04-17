@@ -194,7 +194,7 @@ class ErrorFreeReservationHandler:
             "services": services,
             "representativeUser": representative,
             "participantUser": participants,
-            "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+            "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": False}],
         }
         
         return body

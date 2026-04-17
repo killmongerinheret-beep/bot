@@ -139,12 +139,12 @@ def auto_hold_slot(task_id, date, slot_id, slot_time, ticket_id, ticket_name, vi
                 key = f'browser_pending_{agent_target}'
                 q = _cache.get(key, [])
                 q.insert(0, job)
-                _cache.set(key, q, timeout=300)
+                _cache.set(key, q, timeout=1800)
                 logger.info(f"  📲 Browser job queued for agent '{agent_target}'")
             else:
                 pending = _cache.get('browser_pending', [])
                 pending.insert(0, job)
-                _cache.set('browser_pending', pending, timeout=300)
+                _cache.set('browser_pending', pending, timeout=1800)
                 logger.info(f"  📲 Browser job queued for any agent")
             return f"Playwright snipe queued: Hold #{held.id} | {date} {slot_time}"
         else:
@@ -316,7 +316,7 @@ def _attempt_snipe(task, held):
         "services": reservation_services,
         "representativeUser": profile.to_representative_user(),
         "participantUser": profile.to_participant_list(held.visitors, adult_count=held.adult_count, child_count=held.child_count, ticket_id=60, service_ids=service_ids),
-        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": False}],
     }
 
     try:
@@ -467,7 +467,7 @@ def snipe_with_dynamic_card(held_slot, card_details):
         'participantUser': profile.to_participant_list(held_slot.visitors),
         'gdpr': [
             {'id': 1, 'check': True},
-            {'id': 3, 'check': True}
+            {'id': 3, 'check': False}
         ]
     }
     

@@ -9,6 +9,7 @@ from .serializers import (
 )
 import logging
 import secrets
+import random
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -928,61 +929,85 @@ def get_browser_trigger_group(request):
 
 @api_view(['POST'])
 def agent_heartbeat(request):
-    """Agent registers itself as online. Stores in Redis with 60s TTL."""
+    """Agent registers itself as online. Scoped by agency_key."""
     from django.core.cache import cache
-    agent_id = request.data.get('agent_id', 'unknown')
-    hostname = request.data.get('hostname', '')
     import time as _t
-    agents = cache.get('online_agents', {})
-    agents[agent_id] = {'hostname': hostname, 'last_seen': _t.time()}
-    cache.set('online_agents', agents, timeout=None)
+    agent_id   = request.data.get('agent_id', 'unknown')
+    hostname   = request.data.get('hostname', '')
+    agency_key = request.data.get('agency_key', 'default')
+
+    # Store under agency-scoped key
+    cache_key = f'online_agents_{agency_key}'
+    agents = cache.get(cache_key, {})
+    agents[agent_id] = {'hostname': hostname, 'last_seen': _t.time(), 'agency_key': agency_key}
+    cache.set(cache_key, agents, timeout=None)
+
+    # Register this agency_key so list_agents can find it
+    known_keys = cache.get('known_agency_keys', set())
+    known_keys.add(agency_key)
+    cache.set('known_agency_keys', known_keys, timeout=None)
+
     return Response({'ok': True})
 
 
 @api_view(['GET'])
 def list_agents(request):
-    """List all agents that have sent a heartbeat in the last 60s."""
+    """List agents online in the last 60s. If agency_key provided, scoped to that agency only."""
     from django.core.cache import cache
     import time as _t
-    agents = cache.get('online_agents', {})
+    agency_key = request.query_params.get('agency_key', '')
     now = _t.time()
-    online = {k: v for k, v in agents.items() if now - v.get('last_seen', 0) < 60}
+
+    if agency_key:
+        # Scoped — only this agency's agents
+        agents = cache.get(f'online_agents_{agency_key}', {})
+        online = {k: v for k, v in agents.items() if now - v.get('last_seen', 0) < 300}
+    else:
+        # No key — merge legacy unscoped + all agency-scoped buckets
+        all_agents = {}
+        legacy = cache.get('online_agents', {})
+        all_agents.update({k: v for k, v in legacy.items() if now - v.get('last_seen', 0) < 300})
+        known_keys = cache.get('known_agency_keys', set()) or set()
+        for key in known_keys:
+            bucket = cache.get(f'online_agents_{key}', {})
+            all_agents.update({k: v for k, v in bucket.items() if now - v.get('last_seen', 0) < 300})
+        online = all_agents
+
     return Response({'agents': online})
 
 
 @api_view(['GET'])
 def get_browser_pending(request):
     """
-    Return pending browser open requests for this specific agent.
-    Supports ?agent_id=<name> to get only jobs targeted at this machine.
-    Falls back to untagged jobs if no targeted jobs exist.
-    Supports ?wait=1 for long-polling (blocks up to 8s).
+    Return pending browser tasks for this agent — scoped by agency_key.
+    Agent polls every 2s. Tasks are only visible to the correct agency.
     """
     from django.core.cache import cache
-    import time as _time
+    agent_id   = request.query_params.get('agent_id', '')
+    agency_key = request.query_params.get('agency_key', 'default')
 
-    agent_id = request.query_params.get('agent_id', '')
-    wait = request.query_params.get('wait', '0') == '1'
-    deadline = _time.time() + 8 if wait else _time.time()
+    # 1. Agent-specific + agency-scoped queue (most targeted)
+    if agent_id:
+        key = f'browser_pending_{agency_key}_{agent_id}'
+        targeted = cache.get(key, [])
+        if targeted:
+            cache.delete(key)
+            return Response({'requests': targeted})
 
-    while True:
-        # Check agent-specific queue first
-        if agent_id:
-            key = f'browser_pending_{agent_id}'
-            targeted = cache.get(key, [])
-            if targeted:
-                cache.delete(key)
-                return Response({'requests': targeted})
+    # 2. Agency-wide queue (any agent for this agency)
+    agency_key_queue = f'browser_pending_{agency_key}'
+    pending = cache.get(agency_key_queue, [])
+    if pending:
+        cache.delete(agency_key_queue)
+        return Response({'requests': pending})
 
-        # Fall back to untagged shared queue
-        pending = cache.get('browser_pending', [])
-        if pending:
-            cache.delete('browser_pending')
-            return Response({'requests': pending})
+    # 3. Legacy fallback (for older bots)
+    legacy = cache.get('browser_pending', [])
+    if legacy:
+        cache.delete('browser_pending')
+        return Response({'requests': legacy})
 
-        if _time.time() >= deadline:
-            return Response({'requests': []})
-        _time.sleep(0.5)
+    return Response({'requests': []})
 
 
 @api_view(['GET'])
@@ -1002,7 +1027,10 @@ def set_agent_config(request):
     from django.core.cache import cache
     config = cache.get('agent_config', {})
     if 'poll_interval' in request.data:
-        config['poll_interval'] = int(request.data['poll_interval'])
+        try:
+            config['poll_interval'] = float(request.data['poll_interval'])
+        except (ValueError, TypeError):
+            pass
     cache.set('agent_config', config, timeout=None)
     return Response({'success': True, 'config': config})
 
@@ -1090,7 +1118,7 @@ def remote_snipe(request):
         "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": held.visitors}],
         "representativeUser": profile.to_representative_user(),
         "participantUser": participants,
-        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": False}],
     }
 
     HC = {
@@ -1881,7 +1909,7 @@ def _do_reservation(request, held):
         "services": reservation_services,
         "representativeUser": profile.to_representative_user(),
         "participantUser": participants,
-        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": False}],
     }
 
     headers = {

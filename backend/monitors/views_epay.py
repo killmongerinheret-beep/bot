@@ -192,7 +192,7 @@ def _do_fresh_reservation(held, participants=None, representative=None, profile=
         ],
         "representativeUser": rep,
         "participantUser": participant_list,
-        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": True}],
+        "gdpr": [{"id": 1, "check": True}, {"id": 3, "check": False}],
     }
 
     res_r = s.post(f'{BASE}/api/visit/reservation', json=res_body, headers=HC, timeout=20)

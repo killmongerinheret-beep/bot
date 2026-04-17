@@ -61,7 +61,8 @@ SERVER_URL            = _cfg.get('server_url',   'https://hydrabot.it')
 BOT_TOKEN             = _cfg.get('bot_token',    '8385485516:AAF8GjzusdFNBekC8cJrTk5wGVnZtDdhAhY')
 ADMIN_CHAT_ID         = _cfg.get('admin_chat_id','6189445236')
 TRIGGER_GROUP_CHAT_ID = _cfg.get('trigger_group','-5245239270')
-POLL_INTERVAL         = int(_cfg.get('poll_interval', 2))
+POLL_INTERVAL         = float(_cfg.get('poll_interval', 2.0))
+AGENCY_KEY            = _cfg.get('agency_key',   'default')
 BROWSER_TIMEOUT       = int(_cfg.get('browser_timeout', 20 * 60))
 AGENT_ID              = _cfg.get('agent_id', os.getenv('AGENT_ID', _platform.node()))
 CHROME_PATH           = _cfg.get('chrome_path', r'C:\Program Files\Google\Chrome\Application\chrome.exe')
@@ -149,11 +150,11 @@ def answer_callback(callback_query_id: str, text: str = ''):
 
 
 def get_telegram_updates():
-    """Long-poll server for pending browser open requests — blocks up to 8s waiting for a job."""
+    """Poll server for pending browser open requests — short poll, returns immediately."""
     try:
         r = requests.get(
-            f'{SERVER_URL}/api/v1/browser-pending/?wait=1&agent_id={AGENT_ID}',
-            timeout=12, proxies={'http': None, 'https': None}
+            f'{SERVER_URL}/api/v1/browser-pending/?agent_id={AGENT_ID}&agency_key={AGENCY_KEY}',
+            timeout=5, proxies={'http': None, 'https': None}
         )
         if r.status_code == 200:
             return r.json().get('requests', [])
@@ -270,11 +271,18 @@ async def open_checkout(slot: dict):
 
     from zoneinfo import ZoneInfo
     rome = ZoneInfo('Europe/Rome')
+
+    if not date:
+        logger.error(f"❌ No date in slot — cannot open browser. Hold #{hold_id}")
+        send_telegram(TRIGGER_GROUP_CHAT_ID,
+            f"❌ Hold #{hold_id} has no date info — use `/open {hold_id}` to retry after the hold is confirmed.")
+        return
+
     day, month, year = date.split('/')
     dt = datetime(int(year), int(month), int(day), 0, 0, 0, tzinfo=rome)
     ts = int(dt.timestamp() * 1000)
-    # Use /home/visit/ URL (same as working test_headful_hold_challenge.py)
-    entry_url = f'{BASE}/home/visit/{visitors}/{ts}/1'
+    # Use /home/fromtag/ URL — triggers ticket selection flow correctly
+    entry_url = f'{BASE}/home/fromtag/{visitors}/{ts}/MV-Biglietti/1'
 
     epay_result = {}
     start_time = time.time()
@@ -309,17 +317,28 @@ async def open_checkout(slot: dict):
                 pass
             return
 
-        # [0] Skip warm-up — go straight to ticket page
+        # [1] Navigate — wait for ticket buttons to render
         logger.info(f"[1] {entry_url}")
         await tab.get(entry_url)
-        await tab.sleep(2)
+        for attempt in range(3):
+            for _ in range(30):
+                count = await tab.evaluate("document.querySelectorAll(\"[data-cy^='bookTicket_']\").length")
+                if count and int(count) > 0: break
+                no_visits = await tab.evaluate("(() => { const b=document.body?.innerText||''; return b.includes('Nessuna visita'); })()")
+                if no_visits:
+                    logger.info(f"  ⚠️ Nessuna visita — reloading (attempt {attempt+1})")
+                    await tab.sleep(1); await tab.get(entry_url); await tab.sleep(2); break
+                await tab.sleep(0.5)
+            if count and int(count) > 0: break
+            await tab.sleep(2)
+        await tab.sleep(0.5)
+        logger.info(f"  Page loaded — {count} ticket button(s)")
 
         # [2] Resolve fresh ticket_id via Search API
         logger.info("[2] Resolving ticket_id via Search API...")
         import requests as _req
 
         def _search_api():
-            cookies = {}  # will be populated below
             return _req.get(f'{BASE}/api/search/resultPerTag', params={
                 'lang': 'it', 'visitorNum': str(visitors), 'visitDate': date,
                 'area': '1', 'who': '', 'page': '0', 'tag': 'MV-Biglietti'
@@ -335,168 +354,170 @@ async def open_checkout(slot: dict):
         if not ticket:
             logger.error(f"No standard entry ticket found for {date}")
             send_telegram(TRIGGER_GROUP_CHAT_ID, f"❌ No ticket found for {date} — hold #{hold_id} still active")
-            # Resume recap since we're not proceeding
             try: _req.post(f'{SERVER_URL}/api/v1/holds/{hold_id}/resume-recap/', timeout=5, proxies={'http': None, 'https': None})
             except: pass
             return
         tid = str(ticket['id'])
         logger.info(f"  ticket_id={tid}")
 
-        # [3] Click PRENOTA — find by ticket name in the card, not by API ticket_id
-        # (Vatican DOM IDs differ from Search API IDs)
-        logger.info(f"[3] Finding PRENOTA button for 'Musei Vaticani - Biglietti d'ingresso'...")
-        dom_tid = await tab.evaluate("""
-            (() => {
-                // Find the ticket card containing "Musei Vaticani" + "ingresso" text
-                const cards = Array.from(document.querySelectorAll('[id^="ticket_"]'));
-                for (const card of cards) {
-                    const text = card.innerText.toLowerCase();
-                    if (text.includes('musei vaticani') && (text.includes('ingresso') || text.includes('biglietti'))) {
-                        // Get the data-cy of the PRENOTA button inside this card
-                        const btn = card.querySelector("[data-cy^='bookTicket_']");
-                        if (btn) return btn.getAttribute('data-cy').replace('bookTicket_', '');
+        # [3] Find PRENOTA button — poll until DOM ready
+        logger.info(f"[3] Finding PRENOTA button...")
+        dom_tid = None
+        for _ in range(10):
+            dom_tid = await tab.evaluate("""
+                (() => {
+                    const cards = Array.from(document.querySelectorAll('[id^="ticket_"]'));
+                    for (const card of cards) {
+                        const text = card.innerText.toLowerCase();
+                        if (text.includes('musei vaticani') && (text.includes('ingresso') || text.includes('biglietti'))) {
+                            const btn = card.querySelector("[data-cy^='bookTicket_']");
+                            if (btn) return btn.getAttribute('data-cy').replace('bookTicket_', '');
+                        }
                     }
-                }
-                // Fallback: first PRENOTA button (not NON PRENOTABILE)
-                const allBtns = Array.from(document.querySelectorAll("[data-cy^='bookTicket_']"));
-                for (const btn of allBtns) {
-                    if (btn.innerText.trim() === 'PRENOTA') {
-                        return btn.getAttribute('data-cy').replace('bookTicket_', '');
+                    const allBtns = Array.from(document.querySelectorAll("[data-cy^='bookTicket_']"));
+                    for (const btn of allBtns) {
+                        if (btn.innerText.trim() === 'PRENOTA')
+                            return btn.getAttribute('data-cy').replace('bookTicket_', '');
                     }
-                }
-                return null;
-            })()
-        """)
+                    return null;
+                })()
+            """)
+            if dom_tid: break
+            await tab.sleep(0.5)
         if not dom_tid:
             logger.error("Could not find PRENOTA button in DOM")
             return
         logger.info(f"  DOM ticket_id={dom_tid} (API had {tid})")
-        tid = dom_tid  # use DOM id for all subsequent steps
+        tid = dom_tid
 
         await tab.evaluate(f"document.querySelector(\"[data-cy='bookTicket_{tid}']\")?.click()")
-        await tab.sleep(1)
+        await tab.sleep(2)
 
-        # [4] Set quantity — exact logic from working test_headful_hold_challenge.py
+        # [4] Set quantity
         logger.info(f"[4] quantity: {adult_count} adults, {child_count} children")
-        await tab.evaluate("""
-            const qty = document.querySelector("[data-cy='ticketQuantity']");
-            if (qty) qty.click();
-        """)
-        await tab.sleep(0.3)
-        await tab.evaluate("""
-            const sec = document.querySelector("div.ng-touched section > div:nth-of-type(1)");
-            if (sec) sec.click();
-        """)
-        await tab.sleep(0.2)
-        await tab.evaluate("""
-            const qty2 = document.querySelector("[data-cy='ticketQuantity']");
-            if (qty2) qty2.click();
-        """)
-        await tab.sleep(0.3)
-        clicked_qty = await tab.evaluate(f"""
+        for _ in range(10):
+            has_qty = await tab.evaluate("!!(document.querySelector('select')||document.querySelector(\"[data-cy='ticketQuantity']\"))")
+            if has_qty: break
+            await tab.sleep(0.4)
+        qty_set = await tab.evaluate(f"""
             (() => {{
-                // Try to find the exact quantity number
-                const all = Array.from(document.querySelectorAll("[data-cy='ticketQuantitySection']"))
-                    .filter(el => el.offsetParent !== null);
-                const match = all.find(el => el.innerText.trim() === '{adult_count}');
-                if (match) {{ match.click(); return match.innerText.trim(); }}
-                // Fallback: click span inside first visible section
-                const span = document.querySelector("[data-cy='ticketQuantitySection'] > span");
-                if (span) {{ span.click(); return span.innerText.trim(); }}
-                const sec = document.querySelector("[data-cy='ticketQuantitySection']");
-                if (sec) {{ sec.click(); return sec.innerText.trim(); }}
-                return null;
+                const selects = Array.from(document.querySelectorAll('select'));
+                if (selects.length > 0) {{
+                    selects[0].value = '{adult_count}';
+                    selects[0].dispatchEvent(new Event('change', {{bubbles: true}}));
+                    if (selects.length > 1) {{
+                        selects[1].value = '{child_count}';
+                        selects[1].dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}
+                    return 'select:' + selects[0].value;
+                }}
+                const el = document.querySelector("[data-cy='ticketQuantity']");
+                if (el) {{ el.click(); return 'dropdown'; }}
+                return 'not-found';
             }})()
         """)
-        logger.info(f"  quantity selected: {clicked_qty}")
-        await tab.sleep(0.2)
+        if 'dropdown' in str(qty_set):
+            await tab.sleep(0.8)
+            await tab.evaluate(f"""
+                (() => {{
+                    const items = Array.from(document.querySelectorAll("[data-cy='ticketQuantitySection']"));
+                    for (const item of items) {{
+                        const t = item.innerText.trim();
+                        if (t === '{visitors}' || t.startsWith('{visitors} ')) {{ item.click(); return; }}
+                    }}
+                    if (items.length >= {visitors}) items[{visitors}-1].click();
+                    else if (items.length > 0) items[items.length-1].click();
+                }})()
+            """)
+        logger.info(f"  quantity set: {qty_set}")
+        await tab.sleep(1.5)
 
-        # [5] Select time slot — wait for slots to render first
+        # [5] Select time slot — wait for slots to render
         logger.info(f"[5] time={slot_time}")
-        target_mins = int(slot_time.split(':')[0]) * 60 + int(slot_time.split(':')[1])
-
-        # Wait up to 5s for time slots to appear
-        for _ in range(10):
-            count = await tab.evaluate("""
-                document.querySelectorAll("[data-cy='time'] div.muvaCalendarNumber").length
-            """)
-            if count and count > 0:
-                break
+        target_mins = int(slot_time.split(':')[0]) * 60 + int(slot_time.split(':')[1]) if slot_time else 0
+        for _ in range(20):
+            count = await tab.evaluate("document.querySelectorAll(\"[data-cy='time']\").length")
+            if count and int(count) > 0: break
             await tab.sleep(0.5)
-
+        logger.info(f"  {count} time slot(s) found")
         if target_mins >= 14 * 60:
-            await tab.evaluate("""
-                (() => {
-                    const tabs = Array.from(document.querySelectorAll('.tab')).filter(el => el.offsetParent !== null);
-                    if (tabs.length >= 2) tabs[1].click();
-                })()
-            """)
-            await tab.sleep(0.5)
-
-        # Exact selector from working file
+            await tab.evaluate("(() => { const tabs=Array.from(document.querySelectorAll('.tab')).filter(e=>e.offsetParent); if(tabs[1]) tabs[1].click(); })()")
+            await tab.sleep(0.8)
         await tab.evaluate(f"""
             (() => {{
-                const els = Array.from(document.querySelectorAll("[data-cy='time'] div.muvaCalendarNumber"))
-                    .filter(el => el.innerText.trim() === '{slot_time}');
-                if (els.length > 0) {{ els[0].scrollIntoView(); els[0].click(); return; }}
-                // fallback: pick closest available time
-                const all = Array.from(document.querySelectorAll("[data-cy='time'] div.muvaCalendarNumber"));
-                if (!all.length) return;
+                const cells = Array.from(document.querySelectorAll("[data-cy='time']"));
+                for (const cell of cells) {{
+                    const txt = cell.innerText.trim();
+                    if (txt === '{slot_time}' || txt.startsWith('{slot_time}')) {{ cell.scrollIntoView(); cell.click(); return; }}
+                    const num = cell.querySelector('div.muvaCalendarNumber, div');
+                    if (num && num.innerText.trim() === '{slot_time}') {{ cell.scrollIntoView(); cell.click(); return; }}
+                }}
                 const target = {target_mins};
                 let best = null, bestDiff = 9999;
-                for (const el of all) {{
-                    const t = el.innerText.trim();
-                    const parts = t.split(':');
+                for (const cell of cells) {{
+                    const txt = cell.innerText.trim().split('\\n')[0];
+                    const parts = txt.split(':');
                     if (parts.length !== 2) continue;
                     const mins = parseInt(parts[0]) * 60 + parseInt(parts[1]);
                     const diff = Math.abs(mins - target);
-                    if (diff < bestDiff) {{ bestDiff = diff; best = el; }}
+                    if (diff < bestDiff) {{ bestDiff = diff; best = cell; }}
                 }}
                 if (best) {{ best.scrollIntoView(); best.click(); }}
             }})()
         """)
-        await tab.sleep(0.8)
+        await tab.sleep(2)
 
-        # [6] Click PROCEDI — exact from working file
+        # [6] PROCEDI — wait for button, JS click bypasses overlay
         logger.info("[6] PROCEDI")
+        for _ in range(10):
+            has_btn = await tab.evaluate("!!(document.querySelector(\"[data-cy='bookVisit']\"))")
+            if has_btn: break
+            await tab.sleep(0.5)
         await tab.evaluate("""
             (() => {
                 const btn = document.querySelector("[data-cy='bookVisit']") ||
-                    Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes("PROCEDI"));
+                    Array.from(document.querySelectorAll('button')).find(b => /PROCEDI/i.test(b.textContent));
                 if (btn) btn.click();
             })()
         """)
-        await tab.sleep(3)
+        await tab.sleep(5)
 
-        # [7] Fill checkout form
+        # [7] Wait for checkout form
         logger.info("[7] Filling form...")
+        for _ in range(60):
+            el = await tab.evaluate("document.querySelector(\"[data-cy='managerSurname']\")?.tagName")
+            if el: break
+            await tab.sleep(0.5)
+        else:
+            logger.warning("Form not found — screenshot saved")
+            try: await tab.save_screenshot('debug_form_missing.png')
+            except: pass
 
         async def fill_field(selector, value):
+            safe = str(value).replace('\\', '\\\\').replace('`', '\\`')
             await tab.evaluate(f"""
                 (() => {{
-                    const el = document.querySelector("{selector}");
-                    if (el) {{
-                        el.focus();
-                        el.value = '';
-                        el.value = `{value}`;
-                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    }}
+                    const el = document.querySelector(`{selector}`);
+                    if (!el) return;
+                    el.focus(); el.value = ''; el.value = `{safe}`;
+                    el.dispatchEvent(new Event('input',  {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    el.blur();
                 }})()
             """)
 
         # Wait for form
-        for _ in range(15):
+        for _ in range(30):
             el = await tab.evaluate("document.querySelector(\"[data-cy='managerSurname']\")?.tagName")
             if el: break
-            await tab.sleep(1)
+            await tab.sleep(0.5)
 
         await fill_field("[data-cy='managerSurname']", profile_data['last_name'])
         await fill_field("[data-cy='managerName']", profile_data['first_name'])
         await fill_field("[data-cy='managerCity']", profile_data['city'])
         await fill_field("[data-cy='managerEmail']", profile_data['email'])
         await fill_field("[data-cy='managerConfirmEmail']", profile_data['email'])
-        await fill_field("[data-cy='managerPhone']", profile_data['phone'])
+        await fill_field("[data-cy='managerPhone']", profile_data.get('phone','').lstrip('+39').lstrip('+'))
 
         # Gender
         await tab.evaluate("""
@@ -540,6 +561,68 @@ async def open_checkout(slot: dict):
         """)
         await tab.sleep(0.2)
 
+        # Birth date
+        logger.info("[8b] Birth date...")
+        bd_raw = profile_data.get('birth_date', {})
+        if isinstance(bd_raw, dict):
+            by = str(bd_raw.get('year', 1990))
+            bm = str(bd_raw.get('month', 'GEN')).upper()
+            bd = str(bd_raw.get('day', 15)).zfill(2)
+        elif isinstance(bd_raw, str) and '-' in bd_raw:
+            parts = bd_raw.split('-')
+            by, bm_num, bd = parts[0], parts[1], parts[2].zfill(2)
+            month_names = {'01':'GEN','02':'FEB','03':'MAR','04':'APR','05':'MAG','06':'GIU',
+                           '07':'LUG','08':'AGO','09':'SET','10':'OTT','11':'NOV','12':'DIC'}
+            bm = month_names.get(bm_num, 'GEN')
+        else:
+            by, bm, bd = '1990', 'GEN', '15'
+        month_map = {'GEN':'01','FEB':'02','MAR':'03','APR':'04','MAG':'05','GIU':'06',
+                     'LUG':'07','AGO':'08','SET':'09','OTT':'10','NOV':'11','DIC':'12'}
+        bm_num = month_map.get(bm, '01')
+        b_display = f"{bd}/{bm_num}/{by}"
+        set_ok = await tab.evaluate(f"""
+            (() => {{
+                const inp = document.querySelector("[data-cy='dateCalendar']");
+                if (!inp) return false;
+                inp.removeAttribute('readonly');
+                inp.focus(); inp.value = '{b_display}';
+                inp.dispatchEvent(new Event('input',  {{bubbles: true}}));
+                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                inp.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true}}));
+                inp.setAttribute('readonly', 'true');
+                return inp.value;
+            }})()
+        """)
+        await tab.sleep(0.4)
+        if not set_ok or set_ok == '':
+            await tab.evaluate("document.querySelector(\"mat-datepicker-toggle button[aria-label='Open calendar']\")?.click()")
+            await tab.sleep(0.8)
+            for _ in range(2):
+                multi = await tab.evaluate("document.querySelectorAll('.mat-calendar-body-cell').length > 12")
+                if multi: break
+                await tab.evaluate("document.querySelector('button.mat-calendar-period-button')?.click()")
+                await tab.sleep(0.4)
+            for _ in range(30):
+                found = await tab.evaluate(f"""
+                    (() => {{
+                        const cells = Array.from(document.querySelectorAll('.mat-calendar-body-cell'));
+                        const yr = cells.find(c => c.textContent.trim() === '{by}');
+                        if (yr) {{ yr.click(); return true; }}
+                        document.querySelector('.mat-calendar-previous-button')?.click();
+                        return false;
+                    }})()
+                """)
+                await tab.sleep(0.3)
+                if found: break
+            await tab.sleep(0.4)
+            await tab.evaluate(f"(() => {{ const cells=Array.from(document.querySelectorAll('.mat-calendar-body-cell')); const mo=cells.find(c=>c.textContent.trim().toUpperCase()==='{bm}'); if(mo) mo.click(); }})()")
+            await tab.sleep(0.4)
+            bd_s = bd.lstrip('0') or '1'
+            await tab.evaluate(f"(() => {{ const cells=Array.from(document.querySelectorAll('span.mat-calendar-body-cell-content')); const day=cells.find(c=>c.textContent.trim()==='{bd_s}'); if(day) day.click(); }})()")
+            await tab.sleep(0.3)
+        set_date = await tab.evaluate("document.querySelector(\"[data-cy='dateCalendar']\")?.value || ''")
+        logger.info(f"  Birth date: {b_display} → field: {set_date}")
+
         # Language
         await tab.evaluate("""
             (() => {
@@ -571,144 +654,211 @@ async def open_checkout(slot: dict):
             await fill_field(f"#participantSurname_{i}", p_last)
             await fill_field(f"#participantName_{i}", p_first)
 
-        # GDPR checkboxes
-        await tab.evaluate("""
-            (() => {
-                const cb1 = document.querySelector("#mat-mdc-checkbox-1-input");
-                if (cb1 && !cb1.checked) {
-                    cb1.click();
-                    setTimeout(() => {
-                        const close = document.querySelector("[data-cy='purchase-rules-close-btn'] mat-icon");
-                        if (close) close.click();
-                    }, 1000);
-                }
-                setTimeout(() => {
-                    const cb4 = document.querySelector("#mat-mdc-checkbox-4-input");
-                    if (cb4 && !cb4.checked) cb4.click();
-                }, 1500);
-            })()
-        """)
-        await tab.sleep(1.5)
+        # GDPR checkboxes — sequential with proper waits
+        cb1 = await tab.evaluate("document.querySelector('#mat-mdc-checkbox-1-input')?.checked")
+        if cb1 is False:
+            await tab.evaluate("document.querySelector('#mat-mdc-checkbox-1-input')?.click()")
+            await tab.sleep(1.5)
+            await tab.evaluate("""
+                (() => {
+                    const close = document.querySelector("[data-cy='purchase-rules-close-btn']")
+                               || Array.from(document.querySelectorAll('button')).find(b => /chiudi|close/i.test(b.textContent));
+                    if (close) close.click();
+                })()
+            """)
+            await tab.sleep(1)
+        await tab.evaluate("(() => { const cb=document.querySelector('#mat-mdc-checkbox-3-input')||document.querySelector('#mat-mdc-checkbox-4-input'); if(cb&&!cb.checked) cb.click(); })()")
+        await tab.sleep(0.5)
+        cb_status = await tab.evaluate("({cb1:document.querySelector('#mat-mdc-checkbox-1-input')?.checked,cb3:document.querySelector('#mat-mdc-checkbox-3-input')?.checked,cb4:document.querySelector('#mat-mdc-checkbox-4-input')?.checked})")
+        logger.info(f"  Checkboxes: {cb_status}")
 
-        # Inject browser-side heartbeat (backup — server recap is paused)
-        await tab.evaluate(f"""
-            ((slot_id, ticket_id, visitors, adult_count, child_count) => {{
-                window._vatican_heartbeat = setInterval(() => {{
-                    fetch('/api/visit/recap', {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        credentials: 'include',
-                        body: JSON.stringify({{
-                            visitId: slot_id,
-                            visitTypeId: parseInt(ticket_id),
-                            visitorNum: parseInt(visitors),
-                            lang: 'it',
-                            tickets: [
-                                {{id: 60, name: 'Biglietto Intero', price: 20, quantity: adult_count.toString()}},
-                                {{id: 61, name: 'Biglietto Ridotto', price: 10, quantity: child_count.toString()}}
-                            ],
-                            additionalCosts: {{'service-0': {{id: 58, name: 'Diritti di Prevendita', price: 5, quantity: parseInt(visitors)}}}},
-                            services: [{{id: 58, name: 'Diritti di Prevendita', price: 5, quantity: parseInt(visitors)}}]
-                        }})
-                    }}).then(r => console.log('HB', r.status, new Date().toLocaleTimeString()))
-                      .catch(e => console.log('HB err', e));
-                }}, 240000);
-                // Keep checkboxes ticked
-                window._box_maintainer = setInterval(() => {{
-                    const cb1 = document.querySelector("#mat-mdc-checkbox-1-input");
-                    const cb4 = document.querySelector("#mat-mdc-checkbox-4-input");
-                    if (cb1 && !cb1.checked) {{
-                        cb1.click();
-                        setTimeout(() => {{
-                            const c = document.querySelector("[data-cy='purchase-rules-close-btn'] mat-icon");
-                            if (c) c.click();
-                        }}, 1000);
-                    }}
-                    if (cb4 && !cb4.checked) cb4.click();
-                }}, 30000);
-            }})("{slot.get('slot_id', '')}", "{tid}", "{visitors}", "{adult_count}", "{child_count}")
-        """)
+        # Turnstile check
+        for _ in range(30):
+            token = await tab.evaluate("(() => { const inp=document.querySelector('[name=\"cf-turnstile-response\"]'); return (inp&&inp.value&&inp.value.length>10)?inp.value.slice(0,20)+'...':null; })()")
+            if token: logger.info(f"  ✅ Turnstile: {token}"); break
+            await tab.sleep(0.5)
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"✅ FORM FILLED — nodriver will auto-solve Turnstile")
-        logger.info(f"   Watch the browser — it should click BUY automatically")
+        logger.info(f"✅ FORM FILLED — clicking BUY")
         logger.info(f"{'='*60}\n")
         send_telegram(TRIGGER_GROUP_CHAT_ID,
-            f"✅ *Form filled for {date} {slot_time}*\n"
-            f"nodriver is solving Turnstile... BUY will be clicked automatically.")
+            f"✅ *Form filled* — {date} {slot_time} | {visitors}v\nClicking BUY...")
 
-        # Wait for reservation or epay redirect
-        deadline = time.time() + BROWSER_TIMEOUT
-        reservation_done = False
-        while time.time() < deadline and not reservation_done:
-            await asyncio.sleep(3)
+        # [9] BUY
+        logger.info("[9] BUY...")
+        clicked = await tab.evaluate("""
+            (() => {
+                const byId = document.querySelector("button#form-submit[type='submit'].btn-submit");
+                if (byId && !byId.disabled) { byId.scrollIntoView(); byId.click(); return 'form-submit'; }
+                const submits = Array.from(document.querySelectorAll("button[type='submit']")).filter(b=>!b.disabled);
+                if (submits.length) { submits[submits.length-1].click(); return 'submit-btn'; }
+                return null;
+            })()
+        """)
+        logger.info(f"  BUY: {clicked}")
 
-            # Check current URL for epay redirect
+        # [10] Wait for epay redirect
+        logger.info("[10] Waiting for epay...")
+        epay_url_found = ''
+        for i in range(120):
+            await tab.sleep(0.5)
             try:
-                current_url = await tab.evaluate("window.location.href")
+                cur = await tab.evaluate("window.location.href")
+                if cur and 'epay' in cur:
+                    epay_url_found = cur
+                    logger.info(f"✅ Redirected to epay: {cur[:80]}")
+                    break
+                if cur and ('error' in cur.lower() or 'errore' in cur.lower()):
+                    logger.warning(f"  Vatican error page: {cur}")
+                    try: await tab.save_screenshot('debug_vatican_error.png')
+                    except: pass
+                    break
+                if i == 10:
+                    err = await tab.evaluate("(() => { for(const s of ['[class*=\"error\"]','[role=\"alert\"]','mat-snack-bar-container']){const e=document.querySelector(s);if(e&&e.innerText.trim().length>3)return e.innerText.trim().slice(0,150);} return null; })()")
+                    if err: logger.warning(f"  Page message: {err}")
             except Exception:
-                current_url = ''
+                pass
 
-            if 'epay.catholica.va' in (current_url or ''):
-                logger.info(f"✅ Redirected to epay: {current_url[:80]}")
+        if not epay_url_found:
+            send_telegram(TRIGGER_GROUP_CHAT_ID, f"❌ No epay redirect for {date} {slot_time}")
+            try: requests.post(f'{SERVER_URL}/api/v1/holds/{hold_id}/resume-recap/', timeout=5, proxies={'http': None, 'https': None})
+            except: pass
+            return
+
+        send_telegram(TRIGGER_GROUP_CHAT_ID, f"💳 *Redirected to epay*\n{date} {slot_time}\nFilling card...")
+
+        # [11] Fill epay form
+        logger.info("[11] Filling epay...")
+        await tab.sleep(3)
+
+        async def epay_fill(fid, val):
+            safe = str(val).replace('`', '\\`')
+            await tab.evaluate(f"""
+                (() => {{
+                    const el = document.querySelector('#{fid}');
+                    if (!el) return;
+                    el.focus(); el.value = `{safe}`;
+                    el.dispatchEvent(new Event('input',  {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    el.blur();
+                }})()
+            """)
+
+        card = {'holder': '', 'number': '', 'expiry': '', 'cvv': ''}
+        try:
+            card_r = await asyncio.to_thread(lambda: requests.get(
+                f'{SERVER_URL}/api/v1/buyer-card/', timeout=5, proxies={'http': None, 'https': None}
+            ))
+            if card_r.status_code == 200:
+                cd = card_r.json()
+                card = {'holder': cd.get('card_holder',''), 'number': cd.get('card_number','').replace(' ',''),
+                        'expiry': cd.get('card_expiry',''), 'cvv': cd.get('card_cvv','')}
+        except Exception:
+            pass
+
+        card_first, *rest = (card['holder'] or f"{profile_data['first_name']} {profile_data['last_name']}").split(' ', 1)
+        card_last = rest[0] if rest else card_first
+        await epay_fill('name',        card_first)
+        await epay_fill('surname',     card_last)
+        await epay_fill('email',       profile_data['email'])
+        await epay_fill('repeatEmail', profile_data['email'])
+        await tab.sleep(0.3)
+
+        if card['number']:
+            iframe_el = await tab.query_selector('iframe[name*="cardNumber"],iframe[id*="cardNumber"]')
+            if iframe_el:
+                await iframe_el.click(); await tab.sleep(0.5)
+                for ch in card['number']:
+                    await iframe_el.send_keys(ch); await tab.sleep(0.05)
+                await tab.sleep(0.3)
+                logger.info(f"  Card: {card['number'][:4]}...{card['number'][-4:]}")
+
+        if card['cvv']:
+            cvv_el = await tab.query_selector('iframe[name*="cvv"],iframe[id*="cvv"]')
+            if cvv_el:
+                await cvv_el.click(); await tab.sleep(0.5)
+                for ch in card['cvv']:
+                    await cvv_el.send_keys(ch); await tab.sleep(0.05)
+                await cvv_el.send_keys('\t')
+                await tab.sleep(0.3)
+                logger.info("  CVV typed")
+
+        if card['expiry']:
+            exp_m, exp_y = card['expiry'].split('/')
+            exp_m = exp_m.strip().zfill(2)
+            exp_y = ('20' + exp_y.strip()) if len(exp_y.strip()) == 2 else exp_y.strip()
+            await tab.evaluate("document.querySelectorAll('app-dropdown')[0]?.querySelector('.select__box--selectedValue')?.click()")
+            await tab.sleep(0.4)
+            await tab.evaluate(f"(() => {{ const items=Array.from(document.querySelectorAll('.select__list--item span')); const mo=items.find(e=>e.textContent.trim()==='{exp_m}'); if(mo) mo.click(); }})()")
+            await tab.sleep(0.3)
+            await tab.evaluate("document.querySelectorAll('app-dropdown')[1]?.querySelector('.select__box--selectedValue')?.click()")
+            await tab.sleep(0.4)
+            await tab.evaluate(f"(() => {{ const items=Array.from(document.querySelectorAll('.select__list--item span')); const yr=items.find(e=>e.textContent.trim()==='{exp_y}'); if(yr) yr.click(); }})()")
+            await tab.sleep(0.3)
+            logger.info(f"  Expiry: {exp_m}/{exp_y}")
+
+        await tab.evaluate("(() => { const cb=document.querySelector('#mat-checkbox-1-input'); if(cb&&!cb.checked) cb.click(); })()")
+        await tab.sleep(0.3)
+
+        # [12] PAY
+        logger.info("[12] PAY...")
+        await tab.evaluate("(() => { document.body.click(); document.activeElement?.blur(); })()")
+        await tab.sleep(0.5)
+        pay_clicked = await tab.evaluate("""
+            (() => {
+                const byId = document.querySelector("button#form-submit[type='submit'].btn-submit");
+                if (byId && !byId.disabled) { byId.scrollIntoView(); byId.focus(); byId.click(); return 'form-submit'; }
+                const byText = Array.from(document.querySelectorAll("button[type='submit']")).find(b=>b.textContent.includes('Paga')&&!b.disabled);
+                if (byText) { byText.scrollIntoView(); byText.focus(); byText.click(); return 'paga-text'; }
+                return null;
+            })()
+        """)
+        logger.info(f"  PAY clicked: {pay_clicked}")
+        send_telegram(TRIGGER_GROUP_CHAT_ID, f"🔄 *PAY clicked* — {date} {slot_time}\nWaiting for bank...")
+
+        # [13] Wait for confirmation / 3DS
+        logger.info("[13] Waiting for confirmation...")
+        reservation_done = False
+        deadline = time.time() + BROWSER_TIMEOUT
+        while time.time() < deadline and not reservation_done:
+            await asyncio.sleep(0.5)
+            try: current_url = await tab.evaluate("window.location.href")
+            except: current_url = ''
+            if not current_url or current_url == epay_url_found: continue
+            if 'feedback/fail' in current_url or ('error' in current_url and 'epay' in current_url):
+                logger.warning(f"  ❌ Payment failed: {current_url}")
+                send_telegram(TRIGGER_GROUP_CHAT_ID, f"❌ *Payment failed* — {date} {slot_time}\nCheck card details.")
+                reservation_done = True; break
+            if any(x in current_url for x in ('feedback/success','confirm','success','thank','grazie','receipt')):
                 reservation_done = True
-
-                # Auto-fill card details
-                try:
-                    card_r = await asyncio.to_thread(lambda: requests.get(
-                        f'{SERVER_URL}/api/v1/buyer-card/', timeout=5, proxies={'http': None, 'https': None}
-                    ))
-                    if card_r.status_code == 200:
-                        card = card_r.json()
-                        await tab.sleep(2)
-                        await tab.evaluate(f"""
-                            (() => {{
-                                const setVal = (sel, val) => {{
-                                    const el = document.querySelector(sel);
-                                    if (el) {{
-                                        el.focus(); el.value = val;
-                                        el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                                        el.dispatchEvent(new Event('change', {{bubbles:true}}));
-                                    }}
-                                }};
-                                setVal("input[id*='cardNumber'], input[ng-model*='cardNumber']", "{card.get('card_number','')}");
-                                setVal("input[id*='expiryDate'], input[ng-model*='expiry']", "{card.get('card_expiry','').replace('//','')}");
-                                setVal("input[id*='cvv'], input[ng-model*='cvv']", "{card.get('card_cvv','')}");
-                                setVal("input[id*='cardHolder'], input[ng-model*='holder']", "{card.get('card_holder','')}");
-                                const terms = document.querySelector("input[type='checkbox']");
-                                if (terms && !terms.checked) terms.click();
-                            }})()
-                        """)
-                        logger.info("  💳 Card details auto-filled on epay page")
-                        send_telegram(TRIGGER_GROUP_CHAT_ID,
-                            f"💳 *Card auto-filled on epay!*\n{date} {slot_time}\nClick PAY to complete.")
-                except Exception as e:
-                    logger.warning(f"  Card fill error: {e}")
-
-                # Mark paid on server
-                try:
-                    requests.post(f'{SERVER_URL}/api/v1/mark-paid/', json={
-                        'hold_id': hold_id, 'reference': '', 'epay_url': current_url
-                    }, timeout=5, proxies={'http': None, 'https': None})
-                except Exception:
-                    pass
-
+                logger.info(f"✅ Payment confirmed: {current_url}")
                 send_telegram(TRIGGER_GROUP_CHAT_ID,
-                    f"✅ *Vatican ticket booked!*\n📅 {date} {slot_time} | 👥 {visitors}v | €{total}\n"
-                    f"💳 Complete payment on epay page.")
-                await tab.sleep(120)  # keep open for user to finish payment
+                    f"✅ *TICKET BOOKED!*\n📅 {date} {slot_time} | 👥 {visitors}v | €{total}\n🎉 Payment confirmed!")
+                try: requests.post(f'{SERVER_URL}/api/v1/mark-paid/', json={'hold_id': hold_id, 'reference': '', 'epay_url': current_url}, timeout=5, proxies={'http': None, 'https': None})
+                except: pass
+                break
+            if current_url != epay_url_found:
+                logger.info(f"  Redirected: {current_url[:80]} — waiting for 3DS...")
+                send_telegram(TRIGGER_GROUP_CHAT_ID, f"📱 *Approve on your phone!*\n{date} {slot_time}")
+                for _ in range(240):
+                    await asyncio.sleep(0.5)
+                    try: cur2 = await tab.evaluate("window.location.href")
+                    except: cur2 = ''
+                    if 'feedback/success' in (cur2 or '') or 'confirm' in (cur2 or ''):
+                        reservation_done = True
+                        send_telegram(TRIGGER_GROUP_CHAT_ID, f"✅ *TICKET BOOKED!*\n📅 {date} {slot_time} | 👥 {visitors}v\n🎉 3DS approved!")
+                        try: requests.post(f'{SERVER_URL}/api/v1/mark-paid/', json={'hold_id': hold_id, 'reference': '', 'epay_url': cur2}, timeout=5, proxies={'http': None, 'https': None})
+                        except: pass
+                        break
+                    if 'feedback/fail' in (cur2 or '') or ('error' in (cur2 or '') and 'epay' in (cur2 or '')):
+                        send_telegram(TRIGGER_GROUP_CHAT_ID, f"❌ *3DS failed* — {date} {slot_time}")
+                        reservation_done = True; break
                 break
 
-            remaining = int(deadline - time.time())
-            if remaining % 60 == 0 and remaining > 0:
-                logger.info(f"  Waiting for Turnstile solve... {remaining//60}min left")
-
         if not reservation_done:
-            logger.warning("⏰ Timeout — no epay redirect detected")
+            logger.warning("⏰ Timeout — no confirmation")
             send_telegram(TRIGGER_GROUP_CHAT_ID,
-                f"⏰ Timeout for {date} {slot_time} — Turnstile may not have solved.\n"
-                f"Hold #{hold_id} still active. Use /pay {hold_id} to retry.")
-            # Resume server recap since we didn't complete
+                f"⏰ Timeout for {date} {slot_time} — Hold #{hold_id} still active.")
             try: requests.post(f'{SERVER_URL}/api/v1/holds/{hold_id}/resume-recap/', timeout=5, proxies={'http': None, 'https': None})
             except: pass
 
@@ -747,27 +897,36 @@ async def main():
     logger.info(f"Press Ctrl+C to stop\n")
     logger.info("Polling Vatican server for slots...")
 
-    send_telegram(ADMIN_CHAT_ID, f"🤖 Browser Agent `{AGENT_ID}` started\nWaiting for jobs...")
+    send_telegram(ADMIN_CHAT_ID, f"🤖 Browser Agent `{AGENT_ID}` started\nPolling for jobs...")
 
     # pending_browser: hold_id → slot dict (waiting for button click)
     pending_browser = {}
     processing_holds = set()  # prevent duplicate browser opens
     heartbeat_last = 0
 
+    global POLL_INTERVAL
     while True:
         try:
-            # Register heartbeat every 30s so server knows this agent is online
+            # ── Register heartbeat every 30s ──
             now = time.time()
             if now - heartbeat_last > 30:
                 try:
                     requests.post(
                         f'{SERVER_URL}/api/v1/agent-heartbeat/',
-                        json={'agent_id': AGENT_ID, 'hostname': _platform.node()},
+                        json={'agent_id': AGENT_ID, 'hostname': _platform.node(), 'agency_key': AGENCY_KEY},
                         timeout=3, proxies={'http': None, 'https': None}
                     )
+                    # Also refresh dynamic config (poll interval) while we're at it
+                    cfg_r = requests.get(f'{SERVER_URL}/api/v1/agent-config/', timeout=3, proxies={'http': None, 'https': None})
+                    if cfg_r.status_code == 200:
+                        new_interval = cfg_r.json().get('poll_interval', POLL_INTERVAL)
+                        if float(new_interval) != POLL_INTERVAL:
+                            POLL_INTERVAL = float(new_interval)
+                            logger.info(f"Dynamic poll interval updated to {POLL_INTERVAL}s")
                 except Exception:
                     pass
                 heartbeat_last = now
+
             # ── Check for new held slots ──────────────────────────────────────
             slots = get_pending_slots()
             for slot in slots:
@@ -829,7 +988,18 @@ async def main():
                         f"🌐 *{user_name}* clicked Open Browser\n"
                         f"Chrome opening for {slot.get('date','?')} {slot.get('slot_time','?')}...")
                     logger.info(f"Opening Chrome for hold #{hold_id} — {slot.get('date')} {slot.get('slot_time')}")
-                    asyncio.create_task(open_checkout(slot))
+
+                    async def _run_checkout(s=slot):
+                        try:
+                            await open_checkout(s)
+                        except Exception as exc:
+                            logger.error(f"open_checkout crashed: {exc}", exc_info=True)
+                            send_telegram(TRIGGER_GROUP_CHAT_ID, f"❌ Browser agent error: {exc}")
+                        finally:
+                            # Remove from processing set so it can be retried
+                            processing_holds.discard(hold_id)
+
+                    asyncio.create_task(_run_checkout())
 
                 elif data.startswith('open_browser_slot:'):
                     import base64
@@ -858,7 +1028,17 @@ async def main():
                             f"🌐 *{user_name}* clicked Open Browser\n"
                             f"Chrome opening for {date_str} {slot_time_str}...")
                         logger.info(f"Opening Chrome for {date_str} {slot_time_str}")
-                        asyncio.create_task(open_checkout(slot))
+
+                        async def _run_checkout_slot(s=slot):
+                            try:
+                                await open_checkout(s)
+                            except Exception as exc:
+                                logger.error(f"open_checkout crashed: {exc}", exc_info=True)
+                                send_telegram(TRIGGER_GROUP_CHAT_ID, f"❌ Browser agent error: {exc}")
+                            finally:
+                                processing_holds.discard(slot_key)
+
+                        asyncio.create_task(_run_checkout_slot())
                     except Exception as e:
                         logger.error(f"open_browser_slot error: {e}")
 
@@ -868,8 +1048,8 @@ async def main():
         except Exception as e:
             logger.error(f"Main loop error: {e}")
 
-        # Long-poll already waits up to 8s — minimal sleep to avoid hammering on errors
-        await asyncio.sleep(0.1)
+        # Dynamic poll sleep
+        await asyncio.sleep(POLL_INTERVAL)
 
 
 if __name__ == '__main__':

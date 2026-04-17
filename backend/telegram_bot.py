@@ -19,6 +19,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 import django
 django.setup()
 
+from django.utils import timezone
 from monitors.models import MonitorTask, Agency, TelegramGroup, User
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -801,9 +802,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cache.set(dedup_key, True, timeout=30)
 
         # Store in cache so local agent can poll it
-        pending = cache.get('browser_pending', [])
-        pending.append({'data': data, 'user': user_name})
-        cache.set('browser_pending', pending, timeout=300)
+        agency = await get_agency(update.effective_chat.id)
+        agency_key = agency.api_key if agency and agency.api_key else 'default'
+        key = f"browser_pending_{agency_key}"
+
+        pending = cache.get(key, [])
+        pending.append({'data': data, 'user': user_name, 'auto': True})
+        cache.set(key, pending, timeout=300)
+        logger.info(f"Queued browser job for agency {agency_key}: {data[:50]}")
 
         # Edit the message to show it was clicked (prevents double-click)
         try:
@@ -921,10 +927,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Date must be in the future. Try again (YYYY-MM-DD):")
                 return
             ud['date'] = text
-            ud['step'] = 'visitors'
+            ud['step'] = 'visitors_a'
             await update.message.reply_text(
-                f"✅ Date: {text}\n\n👥 How many visitors?",
-                reply_markup=kb_visitors()
+                f"✅ Date: {text}\n\n👥 How many *Adults*?",
+                parse_mode='Markdown',
+                reply_markup=kb_visitors_adults()
             )
         except ValueError:
             await update.message.reply_text("❌ Invalid format. Use YYYY-MM-DD (e.g. 2026-06-15):")
@@ -1182,6 +1189,54 @@ async def do_create_monitor(query, context):
         except Exception as e:
             logger.warning(f"Could not trigger immediate check: {e}")
 
+        # ── PLAYWRIGHT: push to browser agent immediately on task creation ──
+        if tier == 'snipe' and checkout_method == 'playwright':
+            import base64 as _b64
+            from django.core.cache import cache as _cache
+            year, month, day = date.split('-')
+            d_api = f"{day}/{month}/{year}"
+            # Preferred time for the agent to target (first in list, or 09:00 fallback)
+            pref_time = preferred_times[0] if preferred_times else '09:00'
+            # Encode slot info — no slot_id yet, agent will find one
+            slot_info = _b64.b64encode(
+                f"{d_api}|{pref_time}||{visitors}|?|{adult_count}|{child_count}".encode()
+            ).decode()
+            job = {
+                'data': f'open_browser_slot:{slot_info}',
+                'user': f'Task #{task.id} (playwright)',
+                'auto': True,
+                'task_id': task.id,
+            }
+            agency_key = agency.api_key if agency and agency.api_key else 'default'
+            agent_target = ud.get('agent_target')
+            if agent_target:
+                key = f'browser_pending_{agency_key}_{agent_target}'
+                q = _cache.get(key, [])
+                q.insert(0, job)
+                _cache.set(key, q, timeout=1800)
+                logger.info(f"Queued targeted browser job for agency {agency_key}, agent {agent_target}")
+            else:
+                key = f'browser_pending_{agency_key}'
+                pending = _cache.get(key, [])
+                pending.insert(0, job)
+                _cache.set(key, pending, timeout=1800)
+                logger.info(f"Queued agency browser job for agency {agency_key}")
+
+            ud['step'] = None
+            extra = ''
+            if snipe_participants:
+                names_preview = ', '.join(f"{p['first_name']} {p['last_name']}" for p in snipe_participants)
+                extra = f"\n👥 Participants: {names_preview}"
+            await query.edit_message_text(
+                f"✅ *Task #{task.id} created — Chrome opening now*\n\n"
+                f"{summary(ud)}{extra}\n\n"
+                f"🌐 Browser agent is launching Chrome for *{d_api}*.\n"
+                f"Form will be pre-filled. Pay manually on the site.",
+                parse_mode='Markdown',
+                reply_markup=kb_back()
+            )
+            return
+
         # For snipe tasks: immediately check if slot is already available and hold it NOW
         if tier == 'snipe':
             try:
@@ -1403,7 +1458,7 @@ async def do_list_snipes(query, context):
 async def do_pay_hold(query, context, hold_id):
     """Generate a payment link for a hold, using uploaded participant names."""
     from asgiref.sync import sync_to_async
-    import aiohttp
+    # import aiohttp (removed unused)
 
     @sync_to_async
     def get_hold_and_link():
@@ -1667,12 +1722,105 @@ async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {error}")
         return
 
+    # Push to browser_pending so the local agent picks it up
+    import base64 as _b64
+    slot_info = _b64.b64encode(
+        f"{hold.date}|{hold.slot_time}|{hold.slot_id or ''}|{hold.visitors}|{hold.total_price or '?'}|{hold.adult_count}|{hold.child_count}".encode()
+    ).decode()
+    job = {'data': f'open_browser:{hold_id}:{slot_info}', 'user': 'Telegram /pay', 'auto': True}
+    pending = cache.get('browser_pending', [])
+    pending.insert(0, job)
+    cache.set('browser_pending', pending, timeout=300)
+
     await update.message.reply_text(
-        f"🌐 *Payment Signal Sent (Hold #{hold_id})*\n\n"
+        f"🌐 *Browser Agent Triggered (Hold #{hold_id})*\n\n"
         f"📅 {hold.date} {hold.slot_time} · {hold.visitors} visitors\n\n"
-        f"✅ `payment_ready` flag set in DB.\n"
-        f"✅ Remote nodriver agent will see this signal within 2-5s.\n"
-        f"✅ Auto-solving Turnstile... stand by.",
+        f"✅ Job queued for local browser agent.\n"
+        f"✅ Chrome will open within ~2s.\n"
+        f"✅ nodriver will auto-solve Turnstile.",
+        parse_mode='Markdown'
+    )
+
+
+async def open_browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/open <hold_id> [agent] — open Chrome on the local agent for a specific hold.
+    You pay manually on the site — the browser just navigates and fills the form.
+    Usage:
+      /open 42          — open on any available agent
+      /open 42 my-pc    — open on a specific machine
+      /open             — list active holds to choose from
+    """
+    import base64 as _b64
+    from django.core.cache import cache
+    from asgiref.sync import sync_to_async
+
+    args = context.args or []
+
+    @sync_to_async
+    def get_active_holds():
+        from monitors.models import HeldSlot
+        return list(HeldSlot.objects.filter(status__in=['held', 'paying']).order_by('-hold_started_at')[:10])
+
+    # No args — list active holds
+    if not args:
+        holds = await get_active_holds()
+        if not holds:
+            await update.message.reply_text(
+                "❌ No active holds.\n\nUse `/add` to set up a snipe task first.",
+                parse_mode='Markdown'
+            )
+            return
+        lines = ["🔒 *Active Holds — use /open <id> to trigger browser:*\n"]
+        for h in holds:
+            rem = max(0, 24 - h.hold_duration_hours())
+            lines.append(f"• `/open {h.id}` — {h.date} {h.slot_time} · {h.visitors}v · {rem:.0f}h left")
+        await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+        return
+
+    if not args[0].isdigit():
+        await update.message.reply_text(
+            "Usage: `/open <hold_id>` or just `/open` to list active holds.",
+            parse_mode='Markdown'
+        )
+        return
+
+    hold_id = int(args[0])
+    target_agent = args[1] if len(args) >= 2 else None
+
+    @sync_to_async
+    def fetch_hold(hid):
+        from monitors.models import HeldSlot
+        try:
+            return HeldSlot.objects.get(id=hid), None
+        except HeldSlot.DoesNotExist:
+            return None, f"Hold #{hid} not found"
+
+    hold, error = await fetch_hold(hold_id)
+    if error:
+        await update.message.reply_text(f"❌ {error}")
+        return
+
+    slot_info = _b64.b64encode(
+        f"{hold.date}|{hold.slot_time}|{hold.slot_id or ''}|{hold.visitors}|{hold.total_price or '?'}|{hold.adult_count}|{hold.child_count}".encode()
+    ).decode()
+    job = {'data': f'open_browser:{hold_id}:{slot_info}', 'user': update.effective_user.first_name or 'User', 'auto': False}
+
+    if target_agent:
+        key = f'browser_pending_{target_agent}'
+        q = cache.get(key, [])
+        q.insert(0, job)
+        cache.set(key, q, timeout=300)
+        target_msg = f"on `{target_agent}`"
+    else:
+        pending = cache.get('browser_pending', [])
+        pending.insert(0, job)
+        cache.set('browser_pending', pending, timeout=300)
+        target_msg = "on first available agent"
+
+    await update.message.reply_text(
+        f"🌐 *Chrome opening {target_msg}*\n\n"
+        f"📅 {hold.date} {hold.slot_time} · {hold.visitors}v\n\n"
+        f"Form will be pre-filled. Pay manually on the site.",
         parse_mode='Markdown'
     )
 
@@ -2648,6 +2796,7 @@ def main():
     app.add_handler(CommandHandler('stop_recap', stop_recap_cmd))
     app.add_handler(CommandHandler('resume_recap', resume_recap_cmd))
     app.add_handler(CommandHandler('pay', pay_cmd))
+    app.add_handler(CommandHandler('open', open_browser_cmd))
     app.add_handler(CommandHandler('agent', agent_cmd))
 
     # Text input (for manual date entry, profile steps)

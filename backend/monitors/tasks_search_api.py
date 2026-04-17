@@ -26,76 +26,37 @@ except ImportError:
 
 
 def get_proxy_str(site='vatican'):
-    """Helper to select the best proxy using Smart Reputation Logic"""
+    """Pick a random active proxy. No DB writes — read-only."""
     from .models import Proxy
     from django.db import models
-    
+    from django.utils import timezone
+
     now = timezone.now()
-    
-    # Filter proxies that are active AND not cooling down
-    valid_proxies = Proxy.objects.filter(is_active=True).filter(
-        models.Q(cooldown_until__isnull=True) | models.Q(cooldown_until__lte=now)
+    proxy_obj = (
+        Proxy.objects.filter(is_active=True)
+        .filter(models.Q(cooldown_until__isnull=True) | models.Q(cooldown_until__lte=now))
+        .order_by('?')
+        .first()
     )
-    
-    # Vatican prefers Oxylabs but can use any proxy
-    proxy_obj = valid_proxies.filter(ip_port__icontains='oxylabs').order_by('?').first()
     if not proxy_obj:
-        proxy_obj = valid_proxies.order_by('?').first()
-
+        # All on cooldown — pick earliest
+        proxy_obj = Proxy.objects.filter(is_active=True).order_by('cooldown_until').first()
     if not proxy_obj:
-        # If ALL proxies are on cooldown, pick the one with the earliest cooldown expiry
-        emergency_proxy = Proxy.objects.filter(is_active=True).order_by('cooldown_until').first()
-        if emergency_proxy:
-            logger.warning(f"⚠️ All proxies on cooldown! Using earliest available: {emergency_proxy}")
-            proxy_obj = emergency_proxy
-        else:
-            return None, None
+        return None, None
 
-    # Update Last Used
-    proxy_obj.last_used = now
-    proxy_obj.save(update_fields=['last_used'])
-
-    user = proxy_obj.username
-    if 'oxylabs' in proxy_obj.ip_port.lower():
+    user = proxy_obj.username or ''
+    if 'oxylabs' in proxy_obj.ip_port.lower() and user:
         import random
-        session_id = random.randint(10000, 99999)
-        user = f"{proxy_obj.username}-session-{session_id}"
-    
+        user = f"{user}-session-{random.randint(10000, 99999)}"
+
     if user and proxy_obj.password:
         return f"http://{user}:{proxy_obj.password}@{proxy_obj.ip_port}", proxy_obj
-    else:
-        return f"http://{proxy_obj.ip_port}", proxy_obj
+    return f"http://{proxy_obj.ip_port}", proxy_obj
 
 
 def report_proxy_status(proxy_obj, success=True):
-    """Update proxy reputation based on result"""
-    if not proxy_obj: 
-        return
-        
-    if success:
-        if proxy_obj.fail_count > 0:
-            proxy_obj.fail_count = 0
-            proxy_obj.consecutive_failures = 0
-            proxy_obj.cooldown_until = None
-            proxy_obj.save()
-    else:
-        proxy_obj.fail_count += 1
-        proxy_obj.consecutive_failures += 1
-        
-        # Smart Cooldown Logic (Exponential Backoff)
-        cooldown_mins = 0
-        if proxy_obj.consecutive_failures >= 10:
-            cooldown_mins = 120  # 2 hours
-        elif proxy_obj.consecutive_failures >= 5:
-            cooldown_mins = 30
-        elif proxy_obj.consecutive_failures >= 3:
-            cooldown_mins = 5
-        
-        if cooldown_mins > 0:
-            proxy_obj.cooldown_until = timezone.now() + timedelta(minutes=cooldown_mins)
-            logger.warning(f"⏰ Proxy {proxy_obj} on cooldown for {cooldown_mins}m")
-        
-        proxy_obj.save()
+    """No-op — skip DB writes for speed."""
+    pass
 
 
 @shared_task(name="run_search_api_vatican_monitor", queue="vatican")
@@ -122,14 +83,12 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             logger.error("❌ VaticanSearchAPIMonitor not available")
             return "Skipped: Monitor not available"
         
-        # Get proxy
+        # Get proxy for this check
         proxy_str, proxy_obj = get_proxy_str('vatican')
-        if proxy_str:
-            logger.info(f"🔌 Using proxy: {proxy_str.split('@')[1] if '@' in proxy_str else proxy_str}")
-        
+
         # Initialize monitor
         monitor = VaticanSearchAPIMonitor(proxy_str=proxy_str)
-        
+
         # Determine ticket type
         ticket_type = 1 if language else 0
         
@@ -144,9 +103,6 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             )
             
             # Report proxy success
-            if proxy_obj:
-                report_proxy_status(proxy_obj, success=success)
-            
             if not success:
                 logger.warning(f"⚠️ Check returned no result for {ticket_name} - treating as sold_out")
                 status = 'sold_out'
@@ -154,13 +110,11 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
                 resolved_ticket_id = ticket_id
             else:
                 status = 'available' if slots else 'sold_out'
-                logger.info(f"✅ Check successful: {len(slots)} slots found")
+                if slots:
+                    logger.info(f"✅ {len(slots)} slots for {ticket_name} {date}")
             
         except Exception as e:
             logger.error(f"❌ Monitor exception: {e}")
-            if proxy_obj:
-                report_proxy_status(proxy_obj, success=False)
-            # Don't set error - keep last known status, retry next cycle
             logger.warning(f"⚠️ Skipping result save for {ticket_name} due to exception - will retry")
             return f"Retrying: {str(e)}"
         

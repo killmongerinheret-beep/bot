@@ -30,33 +30,18 @@ class VaticanSearchAPIMonitor:
     """
     
     def __init__(self, proxy_str: Optional[str] = None):
-        """
-        Initialize the monitor.
-        
-        Args:
-            proxy_str: Optional proxy string (http://user:pass@host:port)
-        """
-        self.proxy_str = proxy_str
+        """Initialize the monitor. Uses proxy if provided, otherwise direct IP."""
         self.session = requests.Session()
-        
-        # Set up proxies if provided
         if proxy_str:
-            self.session.proxies = {
-                'http': proxy_str,
-                'https': proxy_str
-            }
-        
-        # Standard headers for Vatican API
+            self.session.proxies = {'http': proxy_str, 'https': proxy_str}
         self.headers = {
             'Accept': 'application/json, text/plain, */*',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'X-Requested-With': 'XMLHttpRequest',
             'Referer': 'https://tickets.museivaticani.va/',
             'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
-            'Origin': 'https://tickets.museivaticani.va'
+            'Origin': 'https://tickets.museivaticani.va',
         }
-        
-        logger.info(f"✅ VaticanSearchAPIMonitor initialized (proxy: {'Yes' if proxy_str else 'No'})")
     
     def normalize_date_format(self, date_str: str) -> str:
         """
@@ -153,7 +138,7 @@ class VaticanSearchAPIMonitor:
                 url,
                 params=params,
                 headers=self.headers,
-                timeout=30
+                timeout=8
             )
             
             if response.status_code == 200:
@@ -164,7 +149,6 @@ class VaticanSearchAPIMonitor:
                 for cookie in self.session.cookies:
                     if cookie.name == 'JSESSIONID':
                         jsessionid = cookie.value
-                        logger.info(f"✅ JSESSIONID obtained: {jsessionid[:20]}...")
                         break
                 
                 # Extract ticket information
@@ -176,18 +160,14 @@ class VaticanSearchAPIMonitor:
                         'availability': ticket.get('availability', 'UNKNOWN')
                     })
                 
-                logger.info(f"✅ Found {len(tickets)} tickets")
-                for ticket in tickets[:5]:  # Log first 5
-                    logger.info(f"   • {ticket['name']}: {ticket['availability']}")
-                
+                logger.debug(f"Found {len(tickets)} tickets for {normalized_date}")
                 return tickets
             else:
-                logger.error(f"❌ Search API error: {response.status_code}")
-                logger.error(f"   Response: {response.text[:200]}")
+                logger.warning(f"Search API {response.status_code} for {normalized_date}")
                 return []
                 
         except Exception as e:
-            logger.error(f"❌ Search API exception: {e}")
+            logger.warning(f"Search API exception {normalized_date}: {e}")
             return []
     
     def match_ticket_by_name(
@@ -305,45 +285,26 @@ class VaticanSearchAPIMonitor:
                 url,
                 params=params,
                 headers=self.headers,
-                timeout=30
+                timeout=8
             )
             
             if response.status_code == 200:
                 data = response.json()
-                
-                if 'timetable' in data:
-                    timetable = data['timetable']
-                    available_slots = []
-                    for slot in timetable:
-                        if slot.get('availability') == 'SOLD_OUT':
-                            continue
-                        slot_id = slot.get('id') or slot.get('visitId') or slot.get('visit_id')
-                        slot_time = slot.get('time') or slot.get('slotTime')
-                        available_slots.append({
-                            'id': slot_id,
-                            'time': slot_time,
-                            'availability': slot.get('availability'),
-                        })
-                    
-                    logger.info(f"✅ Timeavail: {len(available_slots)}/{len(timetable)} slots available")
-                    if available_slots:
-                        logger.info(f"   First 3: {', '.join([s.get('time') or '' for s in available_slots[:3]])}")
-                    
-                    return True, available_slots
-                else:
-                    # No timetable = sold out
-                    logger.info(f"⏭️ No timetable in timeavail response - sold_out")
-                    return True, []
+                timetable = data.get('timetable', [])
+                available_slots = [
+                    {'id': s.get('id'), 'time': s.get('time'),
+                     'availability': s.get('availability')}
+                    for s in timetable if s.get('availability') != 'SOLD_OUT'
+                ]
+                logger.debug(f"Timeavail: {len(available_slots)}/{len(timetable)} available")
+                return True, available_slots
             elif response.status_code == 500:
-                # Vatican returns 500 for sold-out or stale ticket IDs - not an error
-                logger.info(f"⏭️ Timeavail HTTP 500 (sold_out or stale ID) - treating as sold_out")
                 return True, []
             else:
-                logger.warning(f"⚠️ Timeavail HTTP {response.status_code} - treating as sold_out")
                 return True, []
                 
         except Exception as e:
-            logger.warning(f"⚠️ Timeavail exception: {e} - treating as sold_out")
+            logger.warning(f"Timeavail exception: {e}")
             return True, []
     
     def check_ticket(

@@ -28,7 +28,7 @@ SECRET_KEY = 'django-insecure-5($a4s_g0pp^f!f$i-$@v5ntr1%fsy#30=u7ueh^b^b8ne4)ip
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['hydrasnipe.it', 'hydrabot.it', 'www.hydrabot.it', '91.99.1.194', '151.25.69.162', 'localhost', '127.0.0.1', 'backend', '*']
+ALLOWED_HOSTS = ['hydrasnipe.it', 'hydrabot.it', 'www.hydrabot.it', '91.99.1.194', '91.99.1.194:8000', '151.25.69.162', 'localhost', '127.0.0.1', 'backend', '*']
 
 # CSRF Trusted Origins (required for Django admin over HTTPS)
 # Includes Cloudflare Tunnel and Vercel domains

@@ -39,3 +39,15 @@ app.autodiscover_tasks(['monitors'], related_name='lightning_snipe')
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     print(f'Request: {self.request!r}')
+
+
+# Start token pool when the snipe worker boots
+from celery.signals import worker_ready
+
+@worker_ready.connect
+def start_token_pool(sender=None, **kwargs):
+    try:
+        from monitors.turnstile_pool import start_pool
+        start_pool()
+    except Exception as e:
+        print(f"Token pool start failed: {e}")

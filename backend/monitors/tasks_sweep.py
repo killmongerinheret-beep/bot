@@ -51,21 +51,19 @@ def _get_proxy():
     return None
 
 
-def _search_and_timeavail(date, visitors, proxy=None):
-    """
-    Step 1+2: Search API → fresh ticket_id + JSESSIONID
-    Then timeavail → list of open slots.
-    Returns (session, ticket_id, open_slots) or (None, None, [])
-    """
+def _search_and_timeavail(date, visitors):
+    """Search API + timeavail using a random proxy."""
+    from .tasks_search_api import get_proxy_str
+    proxy_str, _ = get_proxy_str('vatican')
     s = requests.Session()
-    if proxy:
-        s.proxies = {'http': proxy, 'https': proxy}
+    if proxy_str:
+        s.proxies = {'http': proxy_str, 'https': proxy_str}
 
     try:
         r = s.get(f'{BASE}/api/search/resultPerTag', params={
             'lang': 'it', 'visitorNum': str(visitors), 'visitDate': date,
             'area': '1', 'who': '', 'page': '0', 'tag': 'MV-Biglietti'
-        }, headers=HEADERS, timeout=12)
+        }, headers=HEADERS, timeout=8)
 
         if r.status_code != 200:
             return None, None, []
@@ -84,7 +82,7 @@ def _search_and_timeavail(date, visitors, proxy=None):
             'visitTypeId': str(ticket_id),
             'visitorNum': str(visitors),
             'visitDate': date,
-        }, headers=HEADERS, timeout=12)
+        }, headers=HEADERS, timeout=8)
 
         if r2.status_code != 200:
             return None, None, []
@@ -273,12 +271,12 @@ def sweep_notify_slot(date, slot_id, slot_time):
                             key = f'browser_pending_{agent_target}'
                             q = _cache.get(key, [])
                             q.append(job)
-                            _cache.set(key, q, timeout=300)
+                            _cache.set(key, q, timeout=1800)
                             logger.info(f"  📲 Browser open queued for agent '{agent_target}'")
                         else:
                             pending = _cache.get('browser_pending', [])
                             pending.append(job)
-                            _cache.set('browser_pending', pending, timeout=300)
+                            _cache.set('browser_pending', pending, timeout=1800)
                             logger.info(f"  📲 Browser open queued for any agent")
                 else:
                     logger.warning(f"  Recap failed: {rr.status_code} {rr.text[:100]}")
@@ -459,8 +457,7 @@ def sweep_monitor_dates():
         all_open_slots = []
         for vis in visitor_counts:
             s, ticket_id, open_slots = _search_and_timeavail(date, vis)
-            if open_slots:
-                all_open_slots.extend(open_slots)
+            if open_slots:                all_open_slots.extend(open_slots)
 
         if not all_open_slots:
             continue
@@ -484,7 +481,7 @@ def sweep_monitor_dates():
                 slot_time=slot_time,
             )
 
-        time.sleep(0.2)
+        time.sleep(0.05)  # tiny gap to avoid hammering Vatican
 
     if new_openings:
         logger.info(f"🚀 SWEEP: Found {new_openings} new openings — notifications dispatched")
