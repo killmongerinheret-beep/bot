@@ -175,16 +175,16 @@ def send_telegram_signal(chat_id: str, message: str) -> bool:
     """
     import requests
     from monitors.models import TelegramGroup
-    
+
     # Check if this is a group and if it's approved
     try:
         group = TelegramGroup.objects.filter(chat_id=str(chat_id)).first()
-        
+
         if group:
             if not group.is_approved():
                 logger.warning(f"⏭️ Skipping notification to unapproved group: {chat_id} (status: {group.status})")
                 return False
-            
+
             if not group.notification_enabled:
                 logger.info(f"🔕 Notifications disabled for group: {chat_id}")
                 return False

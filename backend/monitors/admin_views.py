@@ -521,3 +521,61 @@ class AdminDashboardViewSet(viewsets.ViewSet):
                 'last_updated': timezone.now()
             }
         })
+
+
+class AdminRecapViewSet(viewsets.ViewSet):
+    """Admin viewset for viewing recapped slots"""
+    permission_classes = [IsSuperAdmin]
+    
+    def list(self, request):
+        """Get all recapped slots from WOR agency"""
+        from .models import HeldSlot
+        
+        # Get WOR agency
+        try:
+            wor_agency = Agency.objects.get(name='WOR')
+        except Agency.DoesNotExist:
+            return Response({'error': 'WOR agency not found'}, status=404)
+        
+        # Get all held slots for WOR
+        slots = HeldSlot.objects.filter(
+            task__agency=wor_agency,
+            status__in=['held', 'paying', 'paid']
+        ).select_related('task').order_by('-hold_started_at')
+        
+        # Apply filters
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            slots = slots.filter(status=status_filter)
+        
+        date_filter = request.query_params.get('date')
+        if date_filter:
+            slots = slots.filter(date__contains=date_filter)
+        
+        # Build response
+        data = []
+        for slot in slots:
+            age_hours = (timezone.now() - slot.hold_started_at).total_seconds() / 3600
+            data.append({
+                'id': slot.id,
+                'date': slot.date,
+                'slot_time': slot.slot_time,
+                'ticket_name': slot.ticket_name,
+                'visitors': slot.visitors,
+                'total_price': str(slot.total_price),
+                'status': slot.status,
+                'recap_id': slot.recap_id,
+                'hold_started_at': slot.hold_started_at,
+                'age_hours': round(age_hours, 1),
+                'jsessionid': slot.jsessionid[:20] + '...' if slot.jsessionid else None,
+            })
+        
+        return Response({
+            'slots': data,
+            'total': len(data),
+            'by_status': {
+                'held': sum(1 for s in data if s['status'] == 'held'),
+                'paying': sum(1 for s in data if s['status'] == 'paying'),
+                'paid': sum(1 for s in data if s['status'] == 'paid'),
+            }
+        })

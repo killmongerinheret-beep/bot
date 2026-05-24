@@ -36,6 +36,10 @@ app.autodiscover_tasks(['monitors'], related_name='turnstile_pool')
 # Lightning snipe engine
 app.autodiscover_tasks(['monitors'], related_name='lightning_snipe')
 
+# Google Sheets auto-sync
+# TEMPORARILY DISABLED - install dependencies first
+# app.autodiscover_tasks(['monitors'], related_name='tasks_google_sheets')
+
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     print(f'Request: {self.request!r}')

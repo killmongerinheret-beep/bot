@@ -1,0 +1,21 @@
+# ============================================================================
+# ADD THESE LINES TO YOUR backend/core/settings.py
+# ============================================================================
+
+# Find the CELERY_BEAT_SCHEDULE section and add this task:
+
+CELERY_BEAT_SCHEDULE = {
+    # ... your existing tasks ...
+    
+    # ========== ADD THIS ==========
+    # Sync booking requests from Google Sheets every 5 minutes
+    'sync-booking-requests': {
+        'task': 'monitors.tasks_booking_sync.sync_booking_requests',
+        'schedule': crontab(minute='*/5'),  # Every 5 minutes
+    },
+    # ========== END ADD ==========
+}
+
+# ============================================================================
+# That's it! Just add the 'sync-booking-requests' entry to CELERY_BEAT_SCHEDULE
+# ============================================================================

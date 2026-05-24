@@ -32,3 +32,24 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Database
+*.sqlite3
+
+# Session and Private Data
+vatican_session.json
+agent_config.json
+Proxy lists (2).json
+intercepted_reservation_body.json
+*.har
+
+# Temporary and Output Files
+*.png
+*.zip
+dist/
+VaticanAgent.spec
+
+# Environment variables
+.env
+.env.local
+.env.*

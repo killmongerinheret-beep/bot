@@ -96,64 +96,89 @@ def _search_and_timeavail(date, visitors):
         return None, None, []
 
 
-def _notify_slot_available(date, slot_time):
-    """Send availability notification ONLY to groups whose tasks monitor this date/time."""
+def _notify_slot_available(date, slot_time, all_slots=None, ticket_name=None, ticket_id=None, visitors=1, language=None):
+    """
+    Send availability notification ONLY to groups whose tasks monitor this date/time.
+    Uses format_vatican_notification so the message includes all slots + booking link.
+    """
     from .models import TelegramGroup, MonitorTask
-    from .notification_utils import send_telegram_signal
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+    from .notification_utils import send_telegram_signal, format_vatican_notification
+    from django.core.cache import cache
 
-    now = datetime.now(ZoneInfo('Europe/Rome')).strftime('%H:%M:%S')
-
+    # date is DD/MM/YYYY — split correctly
     try:
-        month_num = int(date.split('/')[1])
-        month_name = {4: 'April', 5: 'May', 6: 'June'}.get(month_num, date)
-    except Exception:
-        month_name = 'Vatican'
-
-    # Find agencies that have tasks monitoring this date
-    try:
-        year, month, day = date.split('/')
-        date_iso = f"20{year[-2:]}-{month}-{day}" if len(year) == 2 else f"{year}-{month}-{day}"
+        day, month, year = date.split('/')
+        date_iso = f"{year}-{month}-{day}"
     except Exception:
         date_iso = date
 
-    # Get agency IDs that have active tasks for this date
-    relevant_agency_ids = set(
-        MonitorTask.objects.filter(
-            is_active=True,
-            dates__contains=[date_iso]
-        ).values_list('agency_id', flat=True)
-    )
+    # Find tasks monitoring this date so we can get per-task preferred_times + visitors
+    tasks = list(MonitorTask.objects.filter(
+        is_active=True,
+        dates__contains=[date_iso]
+    ).select_related('agency'))
 
-    if not relevant_agency_ids:
+    if not tasks:
         logger.debug(f"No tasks monitoring {date} — skipping notification")
         return
 
-    msg = (
-        f"🎉 {month_name.upper()} TICKETS AVAILABLE!\n\n"
-        f"📅 Date: {date}\n"
-        f"⏰ Time: {slot_time}\n"
-        f"🎫 Musei Vaticani - Standard Entry\n\n"
-        f"⚡ Act fast — slots fill quickly!\n"
-        f"🕐 Detected: {now} Rome time"
-    )
+    # Build slot list — always include the triggering slot, plus any extras passed in
+    slot_dicts = []
+    seen_times = set()
+    for s in (all_slots or []):
+        t = s.get('time', '') if isinstance(s, dict) else s
+        if t and t not in seen_times:
+            slot_dicts.append({'time': t})
+            seen_times.add(t)
+    # Make sure the triggering slot is always present
+    if slot_time and slot_time not in seen_times:
+        slot_dicts.insert(0, {'time': slot_time})
 
-    # Only send to groups linked to relevant agencies
-    groups = TelegramGroup.objects.filter(
-        status='approved',
-        agency_id__in=relevant_agency_ids
-    )
-    sent = 0
-    for g in groups:
-        if send_telegram_signal(g.chat_id, msg):
-            sent += 1
+    # Send one message per agency (using that agency's task preferred_times)
+    notified_groups = set()
+    for task in tasks:
+        groups = TelegramGroup.objects.filter(
+            status='approved',
+            notification_enabled=True,
+            agency=task.agency,
+        )
+        if not groups.exists():
+            continue
 
-    logger.info(f"📢 Alert sent to {sent} groups (agencies: {relevant_agency_ids}) for {date} {slot_time}")
+        preferred = task.preferred_times or []
+        task_visitors = task.visitors or visitors
+        task_language = task.language or language or None
+        task_ticket_name = ticket_name or task.ticket_name or "Musei Vaticani - Biglietti d'ingresso"
+        task_ticket_id = ticket_id or task.ticket_id or ""
+
+        msg = format_vatican_notification(
+            date=date,
+            ticket_name=task_ticket_name,
+            ticket_id=str(task_ticket_id),
+            slots=slot_dicts,
+            preferred_times=preferred,
+            language=task_language,
+            visitors=task_visitors,
+            check_method="sweep",
+        )
+
+        for g in groups:
+            if g.chat_id in notified_groups:
+                continue
+            # ── Per-group dedup key: shared with search_api path ──
+            group_sent_key = f"notified:{g.chat_id}:{date}"
+            if cache.get(group_sent_key):
+                logger.info(f"⏭️ Already notified {g.chat_id} for {date} — skipping")
+                continue
+            if send_telegram_signal(g.chat_id, msg):
+                cache.set(group_sent_key, True, timeout=86400 * 7)
+                notified_groups.add(g.chat_id)
+
+    logger.info(f"📢 Alert sent to {len(notified_groups)} groups for {date} {slot_time}")
 
 
 @shared_task(name="sweep_notify_slot", queue="snipe")
-def sweep_notify_slot(date, slot_id, slot_time):
+def sweep_notify_slot(date, slot_id, slot_time, all_slots=None):
     """
     Slot detected by sweep monitor.
     1. For snipe tasks: IMMEDIATELY call recap to lock the slot (~55 min hold)
@@ -287,10 +312,9 @@ def sweep_notify_slot(date, slot_id, slot_time):
         logger.error(f"Sweep snipe trigger error: {e}")
 
     # Always notify (after snipe attempt so notify doesn't race)
-    _notify_slot_available(date, slot_time)
+    _notify_slot_available(date, slot_time, all_slots=all_slots)
 
-    # Send browser button to WOR Bot for ALL detected slots
-    # This fires regardless of tier — any slot detection triggers the button
+    # Send browser button — ONLY to admin chat, never to agency groups
     try:
         from django.core.cache import cache
         import json as _json
@@ -300,55 +324,55 @@ def sweep_notify_slot(date, slot_id, slot_time):
             chat_id = trigger.get('chat_id')
             BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 
-            # Try to find a HeldSlot (created by snipe tasks)
-            from .models import HeldSlot
-            held = HeldSlot.objects.filter(
-                date=date, slot_time=slot_time, status__in=['held','paying']
-            ).order_by('-hold_started_at').first()
-
-            if held:
-                # Snipe task created a hold — button opens browser for this specific hold
-                # Embed slot info in callback so agent doesn't need to fetch it
-                import base64 as _b64
-                slot_info = _b64.b64encode(
-                    f"{held.date}|{held.slot_time}|{held.slot_id}|{held.visitors}|{held.total_price}".encode()
-                ).decode()
-                msg = (
-                    f"🎫 *Slot Locked — Book Now!*\n\n"
-                    f"📅 {date} {slot_time}\n"
-                    f"👥 {held.visitors} visitors | €{held.total_price}\n\n"
-                    f"Click to open Chrome on your machine:"
-                )
-                button_data = f'open_browser:{held.id}:{slot_info}'
+            # Safety check: never send to an agency group
+            from .models import TelegramGroup, HeldSlot
+            is_agency_group = TelegramGroup.objects.filter(chat_id=str(chat_id)).exists()
+            if is_agency_group:
+                logger.warning(f"⛔ browser_trigger_group {chat_id} is an agency group — skipping browser button")
             else:
-                # Notify-only task — no hold, but still send button to open browser
-                # Browser agent will do the full flow (search → recap → checkout)
-                msg = (
-                    f"🎫 *Slot Available — Open Browser to Book!*\n\n"
-                    f"📅 {date} {slot_time}\n"
-                    f"🎫 Musei Vaticani - Standard Entry\n\n"
-                    f"Click to open Chrome and book now:"
-                )
-                # Encode date+time+slot_id for the agent
-                import base64
-                slot_info = base64.b64encode(
-                    f"{date}|{slot_time}|{slot_id}".encode()
-                ).decode()
-                button_data = f'open_browser_slot:{slot_info}'
+                # Try to find a HeldSlot (created by snipe tasks)
+                held = HeldSlot.objects.filter(
+                    date=date, slot_time=slot_time, status__in=['held','paying']
+                ).order_by('-hold_started_at').first()
 
-            _req.post(
-                f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-                json={
-                    'chat_id': chat_id,
-                    'text': msg,
-                    'parse_mode': 'Markdown',
-                    'reply_markup': _json.dumps({'inline_keyboard': [[
-                        {'text': '🌐 Open Browser', 'callback_data': button_data}
-                    ]]})
-                },
-                timeout=5
-            )
-            logger.info(f"📢 Browser button sent to {trigger.get('title')} ({chat_id})")
+                if held:
+                    import base64 as _b64
+                    slot_info = _b64.b64encode(
+                        f"{held.date}|{held.slot_time}|{held.slot_id}|{held.visitors}|{held.total_price}".encode()
+                    ).decode()
+                    msg = (
+                        f"🎫 *Slot Locked — Book Now!*\n\n"
+                        f"📅 {date} {slot_time}\n"
+                        f"👥 {held.visitors} visitors | €{held.total_price}\n\n"
+                        f"Click to open Chrome on your machine:"
+                    )
+                    button_data = f'open_browser:{held.id}:{slot_info}'
+                else:
+                    msg = (
+                        f"🎫 *Slot Available — Open Browser to Book!*\n\n"
+                        f"📅 {date} {slot_time}\n"
+                        f"🎫 Musei Vaticani - Standard Entry\n\n"
+                        f"Click to open Chrome and book now:"
+                    )
+                    import base64
+                    slot_info = base64.b64encode(
+                        f"{date}|{slot_time}|{slot_id}".encode()
+                    ).decode()
+                    button_data = f'open_browser_slot:{slot_info}'
+
+                _req.post(
+                    f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
+                    json={
+                        'chat_id': chat_id,
+                        'text': msg,
+                        'parse_mode': 'Markdown',
+                        'reply_markup': _json.dumps({'inline_keyboard': [[
+                            {'text': '🌐 Open Browser', 'callback_data': button_data}
+                        ]]})
+                    },
+                    timeout=5
+                )
+                logger.info(f"📢 Browser button sent to {trigger.get('title')} ({chat_id})")
     except Exception as e:
         logger.debug(f"Browser button send error: {e}")
 
@@ -457,29 +481,49 @@ def sweep_monitor_dates():
         all_open_slots = []
         for vis in visitor_counts:
             s, ticket_id, open_slots = _search_and_timeavail(date, vis)
-            if open_slots:                all_open_slots.extend(open_slots)
+            if open_slots:
+                all_open_slots.extend(open_slots)
 
-        if not all_open_slots:
+        # Deduplicate slots by time
+        seen_times = set()
+        deduped_slots = []
+        for slot in all_open_slots:
+            t = slot.get('time', '')
+            if t and t not in seen_times:
+                seen_times.add(t)
+                deduped_slots.append(slot)
+
+        is_now_open = len(deduped_slots) > 0
+
+        # ── Pure state machine — no cooldowns, no timers ──────────────────
+        # Shared key with tasks_search_api so both paths see the same state
+        state_key = f"sweep_state:{date}"
+        prev_state = cache.get(state_key)
+        if isinstance(prev_state, bytes):
+            prev_state = prev_state.decode()
+
+        new_state = 'open' if is_now_open else 'closed'
+        cache.set(state_key, new_state, timeout=86400 * 7)
+
+        if prev_state is None:
+            # First ever check — establish baseline, never notify
+            logger.info(f"SWEEP baseline {date}: {new_state}")
             continue
 
-        for slot in all_open_slots:
-            slot_id = slot.get('id', '')
-            slot_time = slot.get('time', '')
-
-            # Check if already notified in last 5 minutes (not permanent)
-            notify_key = f"sweep_notified:{date}:{slot_time}"
-            if cache.get(notify_key):
-                continue
-            cache.set(notify_key, True, timeout=300)  # 5 min cooldown
-
-            logger.info(f"🆕 NEW OPENING [{weekday}]: {date} {slot_time} | id={slot_id} | avail={slot.get('availability')}")
+        if is_now_open and prev_state != 'open':
+            # CLOSED → OPEN: fire exactly one notification
+            first_slot = deduped_slots[0]
+            logger.info(f"🆕 OPEN [{weekday}]: {date} — {len(deduped_slots)} slots")
             new_openings += 1
-
             sweep_notify_slot.delay(
                 date=date,
-                slot_id=str(slot_id),
-                slot_time=slot_time,
+                slot_id=str(first_slot.get('id', '')),
+                slot_time=first_slot.get('time', ''),
+                all_slots=deduped_slots,
             )
+        elif not is_now_open and prev_state == 'open':
+            # OPEN → CLOSED: log it (no notification needed unless you want one)
+            logger.info(f"🔒 CLOSED [{weekday}]: {date} — slots gone")
 
         time.sleep(0.05)  # tiny gap to avoid hammering Vatican
 

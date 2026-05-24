@@ -112,6 +112,9 @@ class VaticanSearchAPIMonitor:
         
         Returns:
             List of dicts with 'id', 'name', 'availability' keys
+        
+        Raises:
+            requests.exceptions.Timeout: If rate limited or connection timeout
         """
         # Normalize date to DD/MM/YYYY format
         normalized_date = self.normalize_date_format(target_date)
@@ -141,6 +144,15 @@ class VaticanSearchAPIMonitor:
                 timeout=8
             )
             
+            # ✅ RATE LIMIT DETECTION
+            if response.status_code == 429:
+                logger.error(f"⚠️ RATE LIMITED (429) - Proxy needs rotation")
+                raise requests.exceptions.Timeout("Rate limited (429)")
+            
+            if response.status_code == 503:
+                logger.error(f"⚠️ Service unavailable (503) - Possible rate limit")
+                raise requests.exceptions.Timeout("Service unavailable (503)")
+            
             if response.status_code == 200:
                 data = response.json()
                 
@@ -166,6 +178,9 @@ class VaticanSearchAPIMonitor:
                 logger.warning(f"Search API {response.status_code} for {normalized_date}")
                 return []
                 
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"⚠️ Search API timeout {normalized_date}: {e}")
+            raise  # Re-raise to trigger proxy rotation
         except Exception as e:
             logger.warning(f"Search API exception {normalized_date}: {e}")
             return []
@@ -237,6 +252,15 @@ class VaticanSearchAPIMonitor:
                     if not any(x in name for x in ['lunch', 'pranzo', 'gruppi', 'scuole']):
                         logger.info(f"✅ Fallback match: {ticket['name']}")
                         return ticket['id']
+        else:
+            # Guided tour fallback — pick first available guided tour ticket
+            for ticket in tickets:
+                name = ticket.get('name', '').lower()
+                avail = ticket.get('availability', '')
+                if avail not in ('SOLD_OUT', 'NOT_ALLOWED'):
+                    if any(x in name for x in ['visita', 'guidat', 'guided', 'tour', 'singoli']):
+                        logger.info(f"✅ Guided fallback match: {ticket['name']}")
+                        return ticket['id']
         
         logger.warning(f"❌ No match found for: {ticket_name}")
         return None
@@ -294,7 +318,9 @@ class VaticanSearchAPIMonitor:
                 available_slots = [
                     {'id': s.get('id'), 'time': s.get('time'),
                      'availability': s.get('availability')}
-                    for s in timetable if s.get('availability') != 'SOLD_OUT'
+                    for s in timetable
+                    if s.get('availability') == 'AVAILABLE'
+                    and (s.get('residual') is None or s.get('residual', 0) > 0)
                 ]
                 logger.debug(f"Timeavail: {len(available_slots)}/{len(timetable)} available")
                 return True, available_slots

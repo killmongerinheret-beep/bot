@@ -366,15 +366,14 @@ def _solve_recaptcha():
 
 
 def _send_to_groups(task, msg):
-    """Send message to all approved groups for this agency."""
-    from .models import TelegramGroup
-    from .notification_utils import send_telegram_signal
-
-    groups = TelegramGroup.objects.filter(
-        agency=task.agency, status='approved', notification_enabled=True
-    )
-    for g in groups:
-        send_telegram_signal(g.chat_id, msg)
+    """
+    Send message to all approved groups for this agency.
+    DISABLED: Only slot monitoring notifications are allowed.
+    Hold/snipe/payment notifications are suppressed.
+    """
+    # ❌ DISABLED: No hold/snipe/payment notifications to agencies
+    # Only slot monitoring (run_smart_vatican_monitor / run_god_tier_vatican_monitor) sends notifications
+    return
 
 
 def snipe_with_dynamic_card(held_slot, card_details):

@@ -8,6 +8,7 @@ No browser automation needed - 10x faster than previous implementation.
 import logging
 import json
 import os
+import requests
 from datetime import timedelta
 from celery import shared_task
 from django.utils import timezone
@@ -65,6 +66,8 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
     🚀 ULTRA-FAST: Vatican monitor using search API directly.
     No browser automation - 10x faster and more reliable.
     
+    ✅ WITH AUTOMATIC PROXY ROTATION ON RATE LIMIT
+    
     Args:
         date: DD/MM/YYYY format
         ticket_id: Vatican ticket ID (may be stale - will be resolved fresh)
@@ -83,43 +86,72 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             logger.error("❌ VaticanSearchAPIMonitor not available")
             return "Skipped: Monitor not available"
         
-        # Get proxy for this check
-        proxy_str, proxy_obj = get_proxy_str('vatican')
-
-        # Initialize monitor
-        monitor = VaticanSearchAPIMonitor(proxy_str=proxy_str)
-
-        # Determine ticket type
-        ticket_type = 1 if language else 0
-        
-        # Perform check
-        try:
-            success, slots, resolved_ticket_id = monitor.check_ticket(
-                target_date=date,
-                ticket_name=ticket_name,
-                visitors=visitors,
-                ticket_type=ticket_type,
-                language=language
-            )
+        # ✅ PROXY ROTATION: Try up to 3 different proxies if rate limited
+        max_retries = 3
+        for attempt in range(max_retries):
+            # Get proxy for this check
+            proxy_str, proxy_obj = get_proxy_str('vatican')
             
-            # Report proxy success
-            if not success:
-                logger.warning(f"⚠️ Check returned no result for {ticket_name} - treating as sold_out")
-                status = 'sold_out'
-                slots = []
-                resolved_ticket_id = ticket_id
+            if proxy_str:
+                logger.info(f"🔄 Attempt {attempt + 1}/{max_retries} using proxy: {proxy_obj.ip_port if proxy_obj else 'direct'}")
             else:
-                status = 'available' if slots else 'sold_out'
-                if slots:
-                    logger.info(f"✅ {len(slots)} slots for {ticket_name} {date}")
+                logger.warning(f"⚠️ No proxies available, using direct IP (attempt {attempt + 1}/{max_retries})")
+
+            # Initialize monitor
+            monitor = VaticanSearchAPIMonitor(proxy_str=proxy_str)
+
+            # Determine ticket type
+            ticket_type = 1 if language else 0
             
-        except Exception as e:
-            logger.error(f"❌ Monitor exception: {e}")
-            logger.warning(f"⚠️ Skipping result save for {ticket_name} due to exception - will retry")
-            return f"Retrying: {str(e)}"
+            # Perform check
+            try:
+                success, slots, resolved_ticket_id = monitor.check_ticket(
+                    target_date=date,
+                    ticket_name=ticket_name,
+                    visitors=visitors,
+                    ticket_type=ticket_type,
+                    language=language
+                )
+                
+                # ✅ SUCCESS - No rate limiting, break retry loop
+                if not success:
+                    logger.warning(f"⚠️ Check returned no result for {ticket_name} - treating as sold_out")
+                    status = 'sold_out'
+                    slots = []
+                    resolved_ticket_id = ticket_id
+                else:
+                    status = 'available' if slots else 'sold_out'
+                    if slots:
+                        logger.info(f"✅ {len(slots)} slots for {ticket_name} {date}")
+                
+                # Success - break retry loop
+                break
+                
+            except requests.exceptions.Timeout as e:
+                logger.error(f"⚠️ RATE LIMITED on attempt {attempt + 1}: {e}")
+                
+                # ✅ COOLDOWN PROXY: Mark this proxy as rate limited
+                if proxy_obj:
+                    proxy_obj.cooldown_until = timezone.now() + timedelta(minutes=15)
+                    proxy_obj.save()
+                    logger.info(f"🔒 Proxy {proxy_obj.ip_port} on cooldown for 15 minutes")
+                
+                # If this was the last attempt, skip result save
+                if attempt == max_retries - 1:
+                    logger.error(f"❌ All {max_retries} proxies failed for {ticket_name} - skipping")
+                    return f"Rate limited: All proxies exhausted"
+                
+                # Otherwise, retry with next proxy
+                logger.info(f"🔄 Retrying with different proxy...")
+                continue
+                
+            except Exception as e:
+                logger.error(f"❌ Monitor exception: {e}")
+                logger.warning(f"⚠️ Skipping result save for {ticket_name} due to exception - will retry")
+                return f"Error: {str(e)}"
         
         # Process results for all interested agencies
-        tasks = MonitorTask.objects.filter(id__in=task_ids)
+        tasks = MonitorTask.objects.filter(id__in=task_ids).select_related('agency')
         
         for task in tasks:
             task.last_checked = timezone.now()
@@ -189,25 +221,17 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
             is_snipe = task.tier in ('hold', 'snipe')
             should_trigger_hold = is_now_available and (status_changed_to_open or is_first_check or is_snipe)
             
-            # 🛡️ SPAM GUARD: Cooldown key (stable - no ticket_id)
-            alert_cooldown_key = f"alert_cooldown:{task.id}:{date}"
-            if should_alert and cache.get(alert_cooldown_key):
-                logger.info(f"⏳ SUPPRESSED ALERT: Cooldown active for {ticket_name}")
-                should_alert = False
-            
-            # Log state changes
+            # ── Pure state machine: notify only on CLOSED → OPEN transition ──
+            should_alert = status_changed_to_open and not is_first_check
+
             if is_first_check and is_now_available:
-                logger.info(f"ℹ️ First check: {ticket_name} already available - NOT alerting (initial state)")
+                logger.info(f"ℹ️ Baseline {date}: already open — no alert")
             elif status_changed_to_open and not is_first_check:
-                if should_alert:
-                    logger.info(f"🔔 STATE CHANGE: {ticket_name} went from CLOSED → OPEN! Sending Alert.")
-                    cache.set(alert_cooldown_key, "sent", timeout=3600)  # 1 Hour Silence
-                else:
-                    logger.info(f"🔕 STATE CHANGE detected but Alert Suppressed (Cooldown/Muted)")
+                logger.info(f"🔔 {date}: CLOSED → OPEN — alerting")
             elif not is_now_available:
-                logger.info(f"🔒 {ticket_name} is CLOSED ({len(slots)} slots)")
+                logger.debug(f"🔒 {date}: closed")
             else:
-                logger.info(f"ℹ️ {ticket_name} still AVAILABLE - no alert needed")
+                logger.debug(f"ℹ️ {date}: still open — no alert")
             
             # ✅ AUTO-HOLD: Grab the slot immediately when it opens
             if should_trigger_hold and slots and task.tier in ('hold', 'snipe'):
@@ -261,55 +285,46 @@ def run_search_api_vatican_monitor(date, ticket_id, ticket_name, language, task_
                 try:
                     from .notification_utils import format_vatican_notification, send_telegram_signal
                     from .models import TelegramGroup
-                    
+
                     # Get all approved groups for this agency
                     approved_groups = TelegramGroup.objects.filter(
                         agency=task.agency,
                         status='approved',
                         notification_enabled=True
                     )
-                    
-                    if approved_groups.exists():
-                        message = format_vatican_notification(
-                            date=date,
-                            ticket_name=ticket_name,
-                            ticket_id=str(resolved_ticket_id or ticket_id),
-                            slots=slots,
-                            preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
-                            language=language,
-                            visitors=task.visitors,
-                            check_method="search_api"
-                        )
-                        
-                        # Send to all approved groups
-                        sent_count = 0
-                        for group in approved_groups:
-                            if send_telegram_signal(group.chat_id, message):
-                                sent_count += 1
-                        
-                        logger.info(f"✅ TELEGRAM ALERT sent to {sent_count}/{approved_groups.count()} groups for {task.agency.name}")
-                    
-                    # Fallback: Also send to legacy telegram_chat_id if set
-                    elif task.agency.telegram_chat_id:
-                        message = format_vatican_notification(
-                            date=date,
-                            ticket_name=ticket_name,
-                            ticket_id=str(resolved_ticket_id or ticket_id),
-                            slots=slots,
-                            preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
-                            language=language,
-                            visitors=task.visitors,
-                            check_method="search_api"
-                        )
-                        
-                        success = send_telegram_signal(task.agency.telegram_chat_id, message)
-                        if success:
-                            logger.info(f"✅ TELEGRAM ALERT sent to legacy chat_id for {task.agency.name}")
-                        else:
-                            logger.error(f"❌ TELEGRAM ALERT failed for legacy chat_id {task.agency.name}")
-                    else:
-                        logger.warning(f"⚠️ No approved Telegram groups found for agency {task.agency.name}")
-                        
+
+                    targets = list(approved_groups.values_list('chat_id', flat=True))
+                    if not targets and task.agency.telegram_chat_id:
+                        targets = [task.agency.telegram_chat_id]
+
+                    if not targets:
+                        logger.warning(f"⚠️ No approved groups for agency {task.agency.name}")
+                        continue
+
+                    message = format_vatican_notification(
+                        date=date,
+                        ticket_name=ticket_name,
+                        ticket_id=str(resolved_ticket_id or ticket_id),
+                        slots=slots,
+                        preferred_times=task.preferred_times if hasattr(task, 'preferred_times') else None,
+                        language=language,
+                        visitors=task.visitors,
+                        check_method="search_api"
+                    )
+
+                    sent_count = 0
+                    for chat_id in targets:
+                        # ── Per-group dedup key: only one notification per group per date ──
+                        group_sent_key = f"notified:{chat_id}:{date}"
+                        if cache.get(group_sent_key):
+                            logger.info(f"⏭️ Already notified {chat_id} for {date} — skipping")
+                            continue
+                        if send_telegram_signal(chat_id, message):
+                            cache.set(group_sent_key, True, timeout=86400 * 7)  # until date passes
+                            sent_count += 1
+
+                    logger.info(f"✅ TELEGRAM ALERT sent to {sent_count} groups for {task.agency.name}")
+
                 except Exception as e:
                     logger.error(f"❌ Notification failed for task {task.id}: {e}")
                     import traceback
@@ -341,16 +356,18 @@ def orchestrate_vatican_tasks_search_api():
         logger.info("🎯 ORCHESTRATOR: Starting Vatican task orchestration (Search API)")
         
         # Get all active Vatican tasks
+        # ✅ Prefetch Telegram groups to avoid N+1 queries
         tasks = MonitorTask.objects.filter(
             site='vatican',
             is_active=True
-        ).select_related('agency')
+        ).select_related('agency').prefetch_related('agency__telegram_groups')
         
         if not tasks.exists():
             logger.info("ℹ️ No active Vatican tasks found")
             return "No active tasks"
         
-        # Group tasks by (date, ticket_id, language, visitors)
+        # ✅ FIX BUG #2: Group by ticket_name instead of stale ticket_id
+        # Vatican changes IDs frequently, so grouping by ID causes duplicate checks
         task_groups = {}
         for task in tasks:
             # Iterate through each date in the task's dates list
@@ -363,11 +380,12 @@ def orchestrate_vatican_tasks_search_api():
                 if not date:
                     continue  # skip past or invalid dates silently
 
-                key = (date, task.ticket_id, task.language, task.visitors)
+                # ✅ FIXED: Group by ticket_name (stable) instead of ticket_id (changes daily)
+                key = (date, task.ticket_name, task.language, task.visitors)
                 if key not in task_groups:
                     task_groups[key] = {
                         'date': date,
-                        'ticket_id': task.ticket_id,
+                        'ticket_id': task.ticket_id,  # Keep for reference, but don't use for grouping
                         'ticket_name': task.ticket_name,
                         'language': task.language,
                         'visitors': task.visitors,
@@ -376,7 +394,20 @@ def orchestrate_vatican_tasks_search_api():
                 task_groups[key]['task_ids'].append(task.id)
         
         logger.info(f"📊 Found {len(tasks)} tasks grouped into {len(task_groups)} unique checks")
-        
+
+        # ✅ SEED: Pre-populate Redis state as 'closed' for any task+date with no entry.
+        # This prevents is_first_check=True from silently swallowing the first open event
+        # after a worker restart or Redis flush.
+        seeded = 0
+        for group in task_groups.values():
+            for tid in group['task_ids']:
+                key = f"ticket_state:{tid}:{group['date']}"
+                if cache.get(key) is None:
+                    cache.set(key, 'closed', timeout=86400 * 7)
+                    seeded += 1
+        if seeded:
+            logger.info(f"🌱 Seeded {seeded} missing Redis states as 'closed'")
+
         # Dispatch checks
         dispatched = 0
         for group in task_groups.values():

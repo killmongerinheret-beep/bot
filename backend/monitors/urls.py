@@ -6,13 +6,14 @@ from .views import (
     get_vatican_tickets,
     list_telegram_groups, approve_telegram_group, reject_telegram_group, suspend_telegram_group,
     register_user, login_user, logout_user, verify_session,
-    list_held_slots, release_held_slot, checkout_redirect, generate_realtime_epay, generate_test_profiles,
-    mark_slot_paid, get_browser_trigger_group, get_browser_pending, get_buyer_profile, get_buyer_card,
+    list_held_slots, get_available_slots, release_held_slot, checkout_redirect, generate_realtime_epay, generate_test_profiles,
+    mark_slot_paid, mark_slot_booked, sync_google_sheets, get_browser_trigger_group, get_browser_pending, get_buyer_profile, get_buyer_card,
     pause_hold_recap, resume_hold_recap, get_agent_config, set_agent_config,
     agent_heartbeat, list_agents, remote_snipe,
+    create_test_slot, delete_test_slots,
 )
 from .admin_views import (
-    AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet
+    AdminAgencyViewSet, AdminUserViewSet, AdminTaskViewSet, AdminDashboardViewSet, AdminRecapViewSet
 )
 from .views_worker import get_pending_snipes, claim_snipe, record_remote_hold, check_payment_signal
 
@@ -29,6 +30,7 @@ admin_router.register(r'agencies', AdminAgencyViewSet, basename='admin-agencies'
 admin_router.register(r'users', AdminUserViewSet, basename='admin-users')
 admin_router.register(r'tasks', AdminTaskViewSet, basename='admin-tasks')
 admin_router.register(r'dashboard', AdminDashboardViewSet, basename='admin-dashboard')
+admin_router.register(r'recap', AdminRecapViewSet, basename='admin-recap')
 
 urlpatterns = [
     # Authentication
@@ -48,11 +50,14 @@ urlpatterns = [
     path('telegram-groups/<int:group_id>/reject/', reject_telegram_group, name='reject-telegram-group'),
     path('telegram-groups/<int:group_id>/suspend/', suspend_telegram_group, name='suspend-telegram-group'),
     path('holds/', list_held_slots, name='list-held-slots'),
+    path('available-slots/', get_available_slots, name='available-slots'),
     path('holds/<int:hold_id>/release/', release_held_slot, name='release-held-slot'),
     path('holds/<int:hold_id>/checkout/', checkout_redirect, name='checkout-redirect'),
     path('holds/<int:hold_id>/pause-recap/', pause_hold_recap, name='pause-hold-recap'),
     path('holds/<int:hold_id>/resume-recap/', resume_hold_recap, name='resume-hold-recap'),
     path('mark-paid/', mark_slot_paid, name='mark-slot-paid'),
+    path('slots/<int:slot_id>/mark-booked/', mark_slot_booked, name='mark-slot-booked'),
+    path('google-sheets/sync/', sync_google_sheets, name='sync-google-sheets'),
     path('browser-trigger-group/', get_browser_trigger_group, name='browser-trigger-group'),
     path('browser-pending/', get_browser_pending, name='browser-pending'),
     path('agent-config/', get_agent_config, name='agent-config'),
@@ -64,6 +69,8 @@ urlpatterns = [
     path('buyer-card/', get_buyer_card, name='buyer-card'),
     path('epay/generate/', generate_realtime_epay, name='generate-realtime-epay'),
     path('test/profiles/', generate_test_profiles, name='generate-test-profiles'),
+    path('test/create-slot/', create_test_slot, name='create-test-slot'),
+    path('test/delete-slots/', delete_test_slots, name='delete-test-slots'),
     
     # Distributed Worker API
     path('worker/tasks/', get_pending_snipes, name='worker-tasks'),

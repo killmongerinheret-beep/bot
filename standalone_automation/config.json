@@ -1,0 +1,16 @@
+{
+    "bokun": {
+        "access_key": "7b6cc45558a642b897af70a9309bfa6a",
+        "secret_key": "b0228774cafe4f18a7b705e12f38b5f4",
+        "api_url": "https://api.bokun.io"
+    },
+    "google_sheets": {
+        "spreadsheet_id": "1ZpGUSWlKM90NYzJIkAb8y1V6IarA9QWs3xRDcHRFX9M",
+        "sheet_name": "Vatican_Participants",
+        "credentials_file": "google_credentials.json"
+    },
+    "bot": {
+        "api_url": "http://localhost:8000",
+        "agency_id": 1
+    }
+}

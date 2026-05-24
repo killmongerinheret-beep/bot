@@ -48,6 +48,17 @@ def _recap_slot(session, slot_id, ticket_id, visitors):
         "services": [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}],
     }
     try:
+        # Default standard tickets
+        tickets = body.get('tickets', [
+            {"id": 60, "name": "Biglietto Intero", "price": 20, "quantity": str(visitors)},
+            {"id": 61, "name": "Biglietto Ridotto", "price": 10, "quantity": 0},
+        ])
+        additional_costs = body.get('additionalCosts', {"service-0": {"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}})
+        services = body.get('services', [{"id": 58, "name": "Diritti di Prevendita", "price": 5, "quantity": int(visitors)}])
+        
+        # In a real scenario, we might want to fetch these from the ticket info, 
+        # but for bulk-blocking, standard tickets usually work to "hold" the session.
+
         r = session.post(f'{BASE}/api/visit/recap', json=body, headers=HC, timeout=10)
         elapsed = int((time.time() - t0) * 1000)
         if r.status_code == 200:
@@ -64,30 +75,59 @@ def _recap_slot(session, slot_id, ticket_id, visitors):
 
 
 def _get_available_slots(session, date, visitors):
-    """Search + timeavail. Returns (ticket_id, slots_list)."""
+    """
+    Search + timeavail. Returns (ticket_id, slots_list).
+    Checks both Standard Admission and Guided Tours.
+    """
+    # 1. Try Standard Admission (MV-Biglietti)
     try:
         r = session.get(f'{BASE}/api/search/resultPerTag', params={
             'lang': 'it', 'visitorNum': str(visitors), 'visitDate': date,
             'area': '1', 'who': '', 'page': '0', 'tag': 'MV-Biglietti'
         }, headers=H_XHR, timeout=10)
-        if r.status_code != 200:
-            return None, []
-        ticket = next((v for v in r.json().get('visits', [])
-                       if 'musei vaticani' in v.get('name', '').lower()
-                       and 'ingresso' in v.get('name', '').lower()
-                       and v.get('availability') in ('AVAILABLE', 'LOW_AVAILABILITY')), None)
-        if not ticket:
-            return None, []
-        tid = ticket['id']
-        r2 = session.get(f'{BASE}/api/visit/timeavail', params={
-            'lang': 'it', 'visitLang': '', 'visitTypeId': str(tid),
-            'visitorNum': str(visitors), 'visitDate': date,
+        if r.status_code == 200:
+            ticket = next((v for v in r.json().get('visits', [])
+                           if 'musei vaticani' in v.get('name', '').lower()
+                           and 'ingresso' in v.get('name', '').lower()
+                           and v.get('availability') in ('AVAILABLE', 'LOW_AVAILABILITY')), None)
+            if ticket:
+                tid = ticket['id']
+                r2 = session.get(f'{BASE}/api/visit/timeavail', params={
+                    'lang': 'it', 'visitLang': '', 'visitTypeId': str(tid),
+                    'visitorNum': str(visitors), 'visitDate': date,
+                }, headers=H_XHR, timeout=10)
+                if r2.status_code == 200:
+                    slots = [sl for sl in r2.json().get('timetable', [])
+                             if sl.get('availability') not in ('SOLD_OUT', 'NOT_ALLOWED')]
+                    if slots:
+                        return tid, slots
+
+        # 2. Try Guided Tours (MV-VisiteGuidate) if Standard is empty
+        r = session.get(f'{BASE}/api/search/resultPerTag', params={
+            'lang': 'it', 'visitorNum': str(visitors), 'visitDate': date,
+            'area': '1', 'who': '', 'page': '0', 'tag': 'MV-VisiteGuidate'
         }, headers=H_XHR, timeout=10)
-        if r2.status_code != 200:
-            return tid, []
-        slots = [sl for sl in r2.json().get('timetable', [])
-                 if sl.get('availability') not in ('SOLD_OUT', 'NOT_ALLOWED')]
-        return tid, slots
+        if r.status_code == 200:
+            ticket = next((v for v in r.json().get('visits', [])
+                           if 'musei vaticani' in v.get('name', '').lower()
+                           and 'visita guidata' in v.get('name', '').lower()
+                           and v.get('availability') in ('AVAILABLE', 'LOW_AVAILABILITY')), None)
+            if ticket:
+                tid = ticket['id']
+                r2 = session.get(f'{BASE}/api/visit/timeavail', params={
+                    'lang': 'it', 'visitLang': '', 'visitTypeId': str(tid),
+                    'visitorNum': str(visitors), 'visitDate': date,
+                }, headers=H_XHR, timeout=10)
+                if r2.status_code == 200:
+                    slots = [sl for sl in r2.json().get('timetable', [])
+                             if sl.get('availability') not in ('SOLD_OUT', 'NOT_ALLOWED')]
+                    if slots:
+                        return tid, slots
+        
+        return None, []
+    except Exception as e:
+        logger.warning(f"get_available_slots error {date}: {e}")
+        return None, []
     except Exception as e:
         logger.warning(f"get_available_slots error {date}: {e}")
         return None, []
@@ -112,8 +152,15 @@ def bulk_hold_scan():
     total_new = 0
 
     for cfg in configs:
+        target = cfg.target_total
+        current_locked = cfg.total_locked or 0
+        
+        if current_locked >= target:
+            logger.info(f"✅ BulkHold #{cfg.id} target reached ({current_locked}/{target}) - skipping")
+            continue
+
         logger.info(f"🔍 BulkHold #{cfg.id} scan: {cfg.date_from}→{cfg.date_to} "
-                    f"{cfg.time_from}-{cfg.time_to} {cfg.visitors}v")
+                    f"Target: {target} (Current: {current_locked})")
 
         # Get already-held slot_ids to skip
         held_slot_ids = set(
@@ -126,34 +173,52 @@ def bulk_hold_scan():
         s = make_vatican_session(use_proxy=True)
         locked_this_scan = 0
 
-        for date in cfg.date_range():
-            # Skip past dates
-            try:
-                d_obj = datetime.strptime(date, '%d/%m/%Y').date()
-                if d_obj < datetime.now().date():
+        # Optimization: Shuffle dates and take a subset if the range is large.
+        # This ensures we eventually cover the whole month without timing out a 15s scan.
+        all_dates = list(cfg.date_range())
+        import random
+        random.shuffle(all_dates)
+        
+        # Limit to 5 dates per scan cycle to keep it under 10 seconds
+        active_dates = all_dates[:5]
+
+        for count in fallback_counts:
+            # Re-check total_locked inside count loop to avoid over-holding
+            if cfg.total_locked >= cfg.target_total:
+                break
+                
+            for date in active_dates:
+                # Re-check target
+                if cfg.total_locked >= cfg.target_total:
+                    break
+
+                # Skip past dates
+                try:
+                    d_obj = datetime.strptime(date, '%d/%m/%Y').date()
+                    if d_obj < datetime.now().date():
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
 
-            tid, slots = _get_available_slots(s, date, cfg.visitors)
-            if not slots:
-                continue
+                tid, slots = _get_available_slots(s, date, count)
+                if not slots:
+                    continue
 
-            # Filter to time window
-            window_slots = [sl for sl in slots if cfg.time_in_window(sl.get('time', ''))]
-            if not window_slots:
-                continue
+                # Filter to time window
+                window_slots = [sl for sl in slots if cfg.time_in_window(sl.get('time', ''))]
+                if not window_slots:
+                    continue
 
-            for slot in window_slots:
-                slot_id = str(slot['id'])
-                slot_time = slot['time']
+                for slot in window_slots:
+                    slot_id = str(slot['id'])
+                    slot_time = slot['time']
 
-                # Skip already held
+                    # Skip already held
                 if slot_id in held_slot_ids:
                     logger.debug(f"  {date} {slot_time} already held — skip")
                     continue
 
-                ok, recap_id, total, elapsed = _recap_slot(s, slot_id, tid, cfg.visitors)
+                ok, recap_id, total, elapsed = _recap_slot(s, slot_id, tid, count)
 
                 if ok:
                     # Save to HeldSlot — need a task FK, use/create a system task
@@ -168,7 +233,7 @@ def bulk_hold_scan():
                         slot_time=slot_time,
                         ticket_id=str(tid),
                         ticket_name="Musei Vaticani - Biglietti d'ingresso",
-                        visitors=cfg.visitors,
+                        visitors=count,
                         total_price=total,
                         jsessionid=jsessionid,
                         ticketmv=ticketmv,
@@ -179,16 +244,20 @@ def bulk_hold_scan():
                     held_slot_ids.add(slot_id)
                     locked_this_scan += 1
                     total_new += 1
-                    logger.info(f"  🔒 Locked {date} {slot_time} | recapId={recap_id} €{total} ({elapsed}ms)")
+                    
+                    # Update config counter immediately to avoid over-holding concurrent dates
+                    cfg.total_locked += count
+                    cfg.save(update_fields=['total_locked'])
+                    
+                    logger.info(f"  🔒 Locked {date} {slot_time} | {count}px | recapId={recap_id} €{total} ({elapsed}ms)")
                 else:
                     logger.debug(f"  ❌ Recap failed {date} {slot_time}: {recap_id}")
 
                 time.sleep(0.05)  # tiny delay between recaps
 
         # Update stats
-        cfg.total_locked += locked_this_scan
         cfg.last_scan_at = timezone.now()
-        cfg.save(update_fields=['total_locked', 'last_scan_at'])
+        cfg.save(update_fields=['last_scan_at'])
 
         if locked_this_scan:
             logger.info(f"✅ BulkHold #{cfg.id}: locked {locked_this_scan} new slots this scan")

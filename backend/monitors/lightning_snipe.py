@@ -389,8 +389,9 @@ def lightning_snipe(task, date: str, slot_id: str, slot_time: str,
             )
 
     groups = TelegramGroup.objects.filter(agency=task.agency, status='approved', notification_enabled=True)
-    sent = sum(1 for g in groups if send_telegram_signal(g.chat_id, msg))
-    logger.info(f"📢 Notified {sent}/{groups.count()} groups | pay_mode={pay_mode}")
+    # ❌ DISABLED: snipe/payment notifications suppressed — only slot monitoring sends to agencies
+    sent = 0
+    logger.info(f"📢 Snipe notification suppressed for {task.agency.name} | pay_mode={pay_mode}")
 
     return {
         'success': True, 'epay_url': epay_url, 'proxy_url': proxy_url,

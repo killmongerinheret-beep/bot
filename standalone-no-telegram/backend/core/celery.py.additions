@@ -1,0 +1,15 @@
+# ============================================================================
+# ADD THIS LINE TO YOUR backend/core/celery.py
+# ============================================================================
+
+# Find the app.autodiscover_tasks() section and add 'monitors.tasks_booking_sync':
+
+app.autodiscover_tasks([
+    'monitors',
+    'monitors.tasks_google_sheets',
+    'monitors.tasks_booking_sync',  # ========== ADD THIS LINE ==========
+])
+
+# ============================================================================
+# That's it! Just add 'monitors.tasks_booking_sync' to the autodiscover list
+# ============================================================================

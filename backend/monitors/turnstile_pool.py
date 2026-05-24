@@ -125,12 +125,38 @@ def start_pool(force=False):
     global _refill_thread, _refill_running
     if _refill_running and not force:
         return
-    if not os.getenv('TWOCAPTCHA_API_KEY'):
+    
+    api_key = os.getenv('TWOCAPTCHA_API_KEY')
+    if not api_key:
+        logger.info("No TWOCAPTCHA_API_KEY — token pool disabled")
         return
+    
+    # ✅ FIX BUG #8: Check balance before starting pool
+    try:
+        r = requests.get('https://2captcha.com/res.php', params={
+            'key': api_key, 'action': 'getbalance', 'json': 1
+        }, timeout=5)
+        balance_str = r.json().get('request', '0')
+        try:
+            balance = float(balance_str)
+        except (ValueError, TypeError):
+            balance = 0.0
+        
+        if balance < 0.01:
+            logger.warning(f"⚠️ 2captcha balance too low (${balance:.3f}) — token pool disabled")
+            logger.warning(f"   Top up at https://2captcha.com to enable auto-booking features")
+            return
+        
+        logger.info(f"✅ 2captcha balance: ${balance:.2f} — starting token pool")
+    except Exception as e:
+        logger.error(f"Failed to check 2captcha balance: {e}")
+        logger.warning("Token pool disabled due to balance check failure")
+        return
+    
     _refill_running = True
     _refill_thread = threading.Thread(target=_refill_loop, daemon=True, name='turnstile-pool')
     _refill_thread.start()
-    logger.info("Token pool started")
+    logger.info("🔐 Token pool started")
 
 
 def stop_pool():

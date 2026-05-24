@@ -17,6 +17,12 @@ class Agency(models.Model):
     plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='free')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    google_sheet_url = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="Google Sheets URL for participant names"
+    )
 
     def __str__(self):
         return self.name
@@ -118,15 +124,9 @@ class MonitorTask(models.Model):
         ('snipe', 'Notify + Hold + Auto-Pay'),
     ]
 
-    PAY_MODE_CHOICES = [
-        ('link', 'Send payment link (user pays themselves)'),
-        ('auto', 'Auto-pay with stored card'),
-    ]
-
-    CHECKOUT_METHOD_CHOICES = [
-        ('api', 'API reservation (needs 2captcha token)'),
-        ('playwright', 'Playwright UI (no 2captcha, slower)'),
-    ]
+    # ❌ REMOVED CHOICES - No longer used with extension:
+    # - PAY_MODE_CHOICES: Extension always auto-pays
+    # - CHECKOUT_METHOD_CHOICES: Extension always uses browser
 
     agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name='tasks')
     site = models.CharField(max_length=50, choices=SITE_CHOICES)
@@ -165,10 +165,6 @@ class MonitorTask(models.Model):
     check_interval = models.IntegerField(default=60, help_text="Interval in seconds")
     
     tier = models.CharField(max_length=20, choices=TIER_CHOICES, default='notify')
-    pay_mode = models.CharField(max_length=10, choices=PAY_MODE_CHOICES, default='link',
-        help_text="snipe tier only: 'link' sends payment URL to Telegram, 'auto' pays with stored card")
-    checkout_method = models.CharField(max_length=12, choices=CHECKOUT_METHOD_CHOICES, default='api',
-        help_text="'api' = fast (needs 2captcha), 'playwright' = slow but free (no token needed)")
     # Participant names for snipe mode — set via /setparticipants before sniping
     # JSON list: [{"first_name": "John", "last_name": "Doe"}, ...]
     participants_json = models.TextField(blank=True, null=True,
@@ -181,11 +177,12 @@ class MonitorTask(models.Model):
     last_status = models.CharField(max_length=50, default='unknown')
     last_result_summary = models.TextField(blank=True, null=True)
     
-    # Distributed Settings
-    remote_worker_needed = models.BooleanField(default=False, help_text="Set to True if this task should be handled by a remote Windows browser node instead of internal API.")
-    remote_worker_claimed = models.DateTimeField(null=True, blank=True, help_text="Timestamp when a remote worker started this task.")
-    agent_target = models.CharField(max_length=100, blank=True, null=True,
-        help_text="Specific agent ID to open Chrome on (e.g. 'windows-main'). NULL = any available agent.")
+    # ❌ REMOVED FIELDS - Extension handles these automatically:
+    # - checkout_method: Extension always uses browser
+    # - pay_mode: Extension always auto-pays
+    # - remote_worker_needed: Extension handles this
+    # - remote_worker_claimed: Extension handles this
+    # - agent_target: Extension handles this
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -466,6 +463,7 @@ class BulkHoldConfig(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # Stats
+    target_total = models.PositiveIntegerField(default=10, help_text="Goal: total tickets to hold across all slots")
     total_locked = models.IntegerField(default=0)
     last_scan_at = models.DateTimeField(null=True, blank=True)
 

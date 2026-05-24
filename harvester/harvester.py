@@ -68,10 +68,12 @@ async def main():
         logger.info(f"📍 Step 1: Launching Browser with UA: {standard_ua[:50]}...")
         harvester.browser = await uc.start(
             headless=True,
+            no_sandbox=True,
             browser_args=[
-                "--no-sandbox", 
-                "--disable-setuid-sandbox", 
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-gpu",
                 f"--user-agent={standard_ua}"
             ]
         )

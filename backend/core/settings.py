@@ -189,13 +189,33 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
+# ✅ CRITICAL: Auto-expire task results to prevent Redis bloat
+# Task results are deleted after 1 hour (3600 seconds)
+# This prevents Redis from growing to GB sizes
+CELERY_RESULT_EXPIRES = 3600  # 1 hour
+
+# ✅ Don't store task results for periodic tasks (they run every 5 seconds)
+# Only store results for important tasks that need tracking
+CELERY_TASK_IGNORE_RESULT = True  # Default: don't store results
+
+# ✅ Redis connection pool settings to prevent connection issues
+CELERY_BROKER_POOL_LIMIT = 10
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
+
 # Celery Beat settings
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 CELERY_BEAT_SCHEDULE = {
+    # Vatican monitoring - every 5 seconds for fast response
+    'vatican-monitor-orchestrator': {
+        'task': 'orchestrate_vatican_tasks_search_api',
+        'schedule': 5.0,  # every 5 seconds
+        'options': {'queue': 'vatican', 'priority': 5},
+    },
     'instant-sniper-scan': {
         'task': 'instant_sniper_scan',
-        'schedule': 15.0,  # Every 15 seconds - highest priority
+        'schedule': 5.0,  # every 5 seconds
         'options': {'queue': 'vatican', 'priority': 0},
     },
     'keepalive-held-slots': {
@@ -205,12 +225,12 @@ CELERY_BEAT_SCHEDULE = {
     },
     'sweep-monitor-dates': {
         'task': 'sweep_monitor_dates',
-        'schedule': 30,  # every 30 seconds
+        'schedule': 5.0,  # every 5 seconds
         'options': {'queue': 'vatican'},
     },
     'bulk-hold-scan': {
         'task': 'bulk_hold_scan',
-        'schedule': 300,  # every 5 minutes
+        'schedule': 15.0,  # Aligned with discovery frequency
         'options': {'queue': 'vatican'},
     },
     'bulk-hold-keepalive': {
@@ -218,6 +238,39 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 1500,  # every 25 minutes
         'options': {'queue': 'vatican'},
     },
+    # ✅ AUTOMATED CLEANUP TASKS (prevent memory leaks and Redis bloat)
+    'cleanup-old-check-results': {
+        'task': 'cleanup_old_check_results',
+        'schedule': 3600,  # ✅ CHANGED: hourly (was daily) - prevents database bloat
+        'options': {'queue': 'vatican'},
+    },
+    'cleanup-expired-holds': {
+        'task': 'cleanup_expired_holds',
+        'schedule': 3600,  # hourly
+        'options': {'queue': 'vatican'},
+    },
+    'cleanup-inactive-tasks': {
+        'task': 'cleanup_inactive_tasks',
+        'schedule': 86400,  # daily (no need to run more often)
+        'options': {'queue': 'vatican'},
+    },
+    'memory-health-check': {
+        'task': 'memory_health_check',
+        'schedule': 1800,  # every 30 minutes
+        'options': {'queue': 'vatican'},
+    },
+    'cleanup-redis-cache': {
+        'task': 'cleanup_redis_cache',
+        'schedule': 3600,  # ✅ CHANGED: hourly (was daily) - prevents Redis bloat
+        'options': {'queue': 'vatican'},
+    },
+    # ✅ GOOGLE SHEETS AUTO-SYNC - automatically imports participant names every hour
+    # TEMPORARILY DISABLED - install dependencies first: pip install gspread google-auth
+    # 'sync-participants-from-sheets': {
+    #     'task': 'sync_participants_from_sheets',
+    #     'schedule': 3600,  # every hour - keeps participant names up-to-date
+    #     'options': {'queue': 'vatican'},
+    # },
     # maintain-turnstile-pool REMOVED — was burning 1,599+ tokens/day
     # Tokens are now solved on-demand only when a snipe fires
 }

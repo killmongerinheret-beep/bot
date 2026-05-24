@@ -33,13 +33,12 @@ if not BOT_TOKEN:
 # ── Keyboards ────────────────────────────────────────────────────────────────
 
 def kb_main():
+    """Simplified main menu - synced with extension workflow"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎫 Book a Ticket", callback_data='book')],
-        [InlineKeyboardButton("➕ Add Monitor", callback_data='add')],
-        [InlineKeyboardButton("📋 List Monitors", callback_data='list')],
-        [InlineKeyboardButton("⚡ Snipes", callback_data='snipes')],
-        [InlineKeyboardButton("🗑️ Remove Monitor", callback_data='remove')],
-        [InlineKeyboardButton("📊 Status", callback_data='status')],
+        [InlineKeyboardButton("🎫 Create Monitor", callback_data='add')],
+        [InlineKeyboardButton("📊 View Status", callback_data='snipes')],
+        [InlineKeyboardButton("👤 Set Profile", callback_data='setprofile_start')],
+        [InlineKeyboardButton("ℹ️ Help", callback_data='help')],
     ])
 
 def kb_calendar(year: int, month: int):
@@ -257,7 +256,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['agency_name'] = agency.name
     context.user_data['agency_plan'] = agency.plan
     await update.message.reply_text(
-        f"🏛️ Vatican Monitor Bot\nAgency: {agency.name}\n\nWhat would you like to do?",
+        f"🏛️ *Vatican Monitor Bot*\n"
+        f"Agency: {agency.name}\n\n"
+        f"*Quick Start:*\n"
+        f"1️⃣ Set your profile (one time)\n"
+        f"2️⃣ Create a monitor for your date\n"
+        f"3️⃣ Install browser extension\n"
+        f"4️⃣ Extension books automatically!\n\n"
+        f"What would you like to do?",
+        parse_mode='Markdown',
         reply_markup=kb_main()
     )
 
@@ -500,7 +507,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data in ('menu', 'back'):
         ud['step'] = None
         await query.edit_message_text(
-            f"🏛️ Vatican Monitor Bot\nAgency: {ud['agency_name']}\n\nWhat would you like to do?",
+            f"🏛️ *Vatican Monitor Bot*\n"
+            f"Agency: {ud['agency_name']}\n\n"
+            f"*Quick Start:*\n"
+            f"1️⃣ Set your profile (one time)\n"
+            f"2️⃣ Create a monitor for your date\n"
+            f"3️⃣ Install browser extension\n"
+            f"4️⃣ Extension books automatically!\n\n"
+            f"What would you like to do?",
+            parse_mode='Markdown',
             reply_markup=kb_main()
         )
         return
@@ -1636,110 +1651,43 @@ async def holds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('\n'.join(lines), parse_mode='Markdown', reply_markup=kb_back())
 
 
-async def stop_recap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/stop_recap <hold_id> — pause keepalive so the agent can click BUY without interference."""
-    import requests as _req
-    args = context.args or []
-    if not args or not args[0].isdigit():
-        await update.message.reply_text(
-            "Usage: `/stop_recap <hold_id>`\n\nPauses the recap keepalive for 15 minutes so the browser can complete checkout.",
-            parse_mode='Markdown'
-        )
-        return
+# ============================================================================
+# DEPRECATED COMMANDS - Replaced by Browser Extension
+# ============================================================================
+# These commands are no longer used. The browser extension handles all booking
+# automation automatically. Kept here for reference only.
+# ============================================================================
 
-    hold_id = int(args[0])
-    BACKEND = os.getenv('BACKEND_URL', 'http://backend:8000')
-    try:
-        r = _req.post(f'{BACKEND}/api/v1/holds/{hold_id}/pause-recap/', timeout=5)
-        if r.status_code == 200:
-            await update.message.reply_text(
-                f"⏸️ *Recap paused for Hold #{hold_id}*\n\n"
-                f"Keepalive stopped for 15 minutes.\n"
-                f"The browser agent can now click BUY without Vatican seeing a double-recap.\n\n"
-                f"If checkout fails, use `/resume_recap {hold_id}` to restart keepalive.",
-                parse_mode='Markdown'
-            )
-        else:
-            await update.message.reply_text(f"❌ Failed to pause recap: {r.status_code} — {r.text[:100]}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+# async def stop_recap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     """/stop_recap <hold_id> — DEPRECATED: Extension handles this automatically."""
+#     await update.message.reply_text(
+#         "⚠️ *This command is deprecated.*\n\n"
+#         "The browser extension handles booking automatically.\n"
+#         "No manual recap control needed.\n\n"
+#         "See /help for current commands.",
+#         parse_mode='Markdown'
+#     )
 
 
-async def resume_recap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/resume_recap <hold_id> — restart keepalive after a failed checkout."""
-    import requests as _req
-    args = context.args or []
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: `/resume_recap <hold_id>`", parse_mode='Markdown')
-        return
-
-    hold_id = int(args[0])
-    BACKEND = os.getenv('BACKEND_URL', 'http://backend:8000')
-    try:
-        r = _req.post(f'{BACKEND}/api/v1/holds/{hold_id}/resume-recap/', timeout=5)
-        if r.status_code == 200:
-            await update.message.reply_text(f"▶️ Recap resumed for Hold #{hold_id} — keepalive restarted.")
-        else:
-            await update.message.reply_text(f"❌ Failed: {r.status_code}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+# async def resume_recap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     """/resume_recap <hold_id> — DEPRECATED: Extension handles this automatically."""
+#     await update.message.reply_text(
+#         "⚠️ *This command is deprecated.*\n\n"
+#         "The browser extension handles booking automatically.\n"
+#         "See /help for current commands.",
+#         parse_mode='Markdown'
+#     )
 
 
-async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/pay <hold_id> — trigger the local browser agent to open Chrome and complete checkout for this hold."""
-    import requests as _req
-    import base64 as _b64
-    from django.core.cache import cache
-
-    args = context.args or []
-    if not args or not args[0].isdigit():
-        await update.message.reply_text(
-            "Usage: `/pay <hold_id>`\n\nTells the browser agent on your machine to open Chrome and complete checkout.",
-            parse_mode='Markdown'
-        )
-        return
-
-    hold_id = int(args[0])
-    from asgiref.sync import sync_to_async
-    from monitors.models import HeldSlot
-
-    @sync_to_async
-    def process_payment_request(hid):
-        try:
-            hold = HeldSlot.objects.select_related('task').get(id=hid)
-            hold.payment_ready = True
-            hold.status = 'paying'
-            hold.save()
-            return hold, None
-        except HeldSlot.DoesNotExist:
-            return None, "Hold not found"
-        except Exception as e:
-            return None, str(e)
-
-    hold, error = await process_payment_request(hold_id)
-
-    if error:
-        await update.message.reply_text(f"❌ {error}")
-        return
-
-    # Push to browser_pending so the local agent picks it up
-    import base64 as _b64
-    slot_info = _b64.b64encode(
-        f"{hold.date}|{hold.slot_time}|{hold.slot_id or ''}|{hold.visitors}|{hold.total_price or '?'}|{hold.adult_count}|{hold.child_count}".encode()
-    ).decode()
-    job = {'data': f'open_browser:{hold_id}:{slot_info}', 'user': 'Telegram /pay', 'auto': True}
-    pending = cache.get('browser_pending', [])
-    pending.insert(0, job)
-    cache.set('browser_pending', pending, timeout=300)
-
-    await update.message.reply_text(
-        f"🌐 *Browser Agent Triggered (Hold #{hold_id})*\n\n"
-        f"📅 {hold.date} {hold.slot_time} · {hold.visitors} visitors\n\n"
-        f"✅ Job queued for local browser agent.\n"
-        f"✅ Chrome will open within ~2s.\n"
-        f"✅ nodriver will auto-solve Turnstile.",
-        parse_mode='Markdown'
-    )
+# async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     """/pay <hold_id> — DEPRECATED: Extension completes payment automatically."""
+#     await update.message.reply_text(
+#         "⚠️ *This command is deprecated.*\n\n"
+#         "The browser extension completes bookings automatically.\n"
+#         "Just wait for the confirmation email!\n\n"
+#         "See /help for current commands.",
+#         parse_mode='Markdown'
+#     )
 
 
 async def open_browser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2525,6 +2473,40 @@ async def do_book_start(query, context):
     )
 
 
+async def deep_scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/deep_scan <YYYY-MM-DD> — check every visitor count for hidden inventory."""
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "🔎 *Deep Discovery Tool*\n\n"
+            "Usage: `/deep_scan 2026-06-15`\n\n"
+            "This will scan for 1, 2, 3, 4, 6, 8, and 10 visitors to find hidden slots.",
+            parse_mode='Markdown'
+        )
+        return
+
+    date_str = args[0]
+    # Basic date validation
+    if not ('-' in date_str and len(date_str) == 10):
+        await update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD.")
+        return
+
+    await update.message.reply_text(
+        f"🚀 *Starting Deep Discovery for {date_str}...*\n\n"
+        f"Checking all visitor counts (1-10).\n"
+        f"Results will be sent here in about 1 minute.",
+        parse_mode='Markdown'
+    )
+
+    # Trigger Celery Task
+    try:
+        from monitors.tasks import run_deep_scan
+        run_deep_scan.delay(date=date_str, chat_id=update.effective_chat.id)
+    except Exception as e:
+        logger.error(f"Failed to trigger deep scan: {e}")
+        await update.message.reply_text(f"❌ Error starting scan: {e}")
+
+
 async def do_book_select_slot(query, context, date_str):
     """Step 2 — show all available time slots for the selected date."""
     from asgiref.sync import sync_to_async
@@ -2780,24 +2762,37 @@ def main():
     # Single callback handler handles everything
     app.add_handler(CallbackQueryHandler(on_callback))
 
-    # Commands
+    # ============================================================================
+    # CORE COMMANDS - Synced with Extension
+    # ============================================================================
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('add', add_cmd))
+    app.add_handler(CommandHandler('add', add_cmd))  # Create monitoring task
+    app.add_handler(CommandHandler('monitor', add_cmd))  # Alias for /add
     app.add_handler(CommandHandler('cancel', cancel_cmd))
     app.add_handler(CommandHandler('setprofile', setprofile_cmd))
     app.add_handler(CommandHandler('setparticipants', setparticipants_cmd))
-    app.add_handler(CommandHandler('setpaymode', setpaymode_cmd))
-    app.add_handler(CommandHandler('bulkhold', bulkhold_cmd))
-    app.add_handler(CommandHandler('setbrowsergroup', setbrowsergroup_cmd))
-    app.add_handler(CommandHandler('holds', holds_cmd))
-    app.add_handler(CommandHandler('snipes', snipes_cmd))
-    app.add_handler(CommandHandler('book', book_cmd))
-    app.add_handler(CommandHandler('pending', pending_cmd))
-    app.add_handler(CommandHandler('stop_recap', stop_recap_cmd))
-    app.add_handler(CommandHandler('resume_recap', resume_recap_cmd))
-    app.add_handler(CommandHandler('pay', pay_cmd))
-    app.add_handler(CommandHandler('open', open_browser_cmd))
-    app.add_handler(CommandHandler('agent', agent_cmd))
+    app.add_handler(CommandHandler('holds', holds_cmd))  # View held slots
+    app.add_handler(CommandHandler('snipes', snipes_cmd))  # View active monitors
+    app.add_handler(CommandHandler('status', snipes_cmd))  # Alias for /snipes
+    
+    # ============================================================================
+    # ADMIN COMMANDS
+    # ============================================================================
+    app.add_handler(CommandHandler('pending', pending_cmd))  # Approve groups
+    
+    # ============================================================================
+    # REMOVED COMMANDS - Extension handles these automatically
+    # ============================================================================
+    # ❌ /pay - Extension books automatically
+    # ❌ /open - Extension opens windows automatically
+    # ❌ /agent - Extension replaces browser agent
+    # ❌ /book - Extension completes booking automatically
+    # ❌ /stop_recap - Not needed with extension
+    # ❌ /resume_recap - Not needed with extension
+    # ❌ /setpaymode - Extension always auto-pays
+    # ❌ /setbrowsergroup - Extension polls API directly
+    # ❌ /bulkhold - Complex feature, rarely used
+    # ❌ /deep_scan - Advanced feature, rarely used
 
     # Text input (for manual date entry, profile steps)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
@@ -2809,6 +2804,7 @@ def main():
     app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
     logger.info("🤖 Telegram bot starting...")
+    logger.info("✅ Extension-synced mode: Automatic booking enabled")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

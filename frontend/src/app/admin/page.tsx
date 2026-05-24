@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Shield, Building2, Users, Activity, Plus, Edit, Trash2, ToggleLeft, ToggleRight, X, Check, BarChart3 } from 'lucide-react';
+import { Shield, Building2, Users, Activity, Plus, Edit, Trash2, ToggleLeft, ToggleRight, X, Check, BarChart3, Lock, RefreshCw } from 'lucide-react';
 
 const AUTH = () => typeof window !== 'undefined' ? localStorage.getItem('session_token') : '';
 const apiFetch = (path: string, opts: RequestInit = {}) =>
@@ -14,10 +14,131 @@ const apiFetch = (path: string, opts: RequestInit = {}) =>
 type Agency = { id: number; name: string; plan: string; is_active: boolean; user_count: number; task_count: number; active_task_count: number; created_at: string; telegram_groups: any[]; telegram_chat_id?: string };
 type User = { id: number; username: string; email: string; full_name: string; is_active: boolean; is_admin: boolean; agency: { id: number; name: string; plan: string }; last_login: string | null; task_count: number };
 type Task = { id: number; agency: { id: number; name: string }; ticket_name: string; ticket_type: string; language: string; dates: string[]; visitors: number; is_active: boolean; last_checked: string | null; last_status: string };
+type RecapSlot = { id: number; date: string; slot_time: string; ticket_name: string; visitors: number; total_price: string; status: string; recap_id: string; hold_started_at: string; age_hours: number; jsessionid: string | null };
+
+// ── Recap Tab ─────────────────────────────────────────────────────────────────
+function RecapView() {
+  const [data, setData] = useState<{ slots: RecapSlot[]; total: number; by_status: any } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [filterDate, setFilterDate] = useState('');
+  const [filterMonth, setFilterMonth] = useState('all');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await apiFetch('recap/');
+      const d = await r.json();
+      setData(d);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const filtered = useMemo(() => {
+    if (!data) return [];
+    return data.slots.filter(s => {
+      if (filterMonth !== 'all') {
+        const monthMap: Record<string, string> = { april: '/04/', may: '/05/', june: '/06/' };
+        if (!s.date?.includes(monthMap[filterMonth])) return false;
+      }
+      if (filterDate && !s.date?.includes(filterDate)) return false;
+      return true;
+    });
+  }, [data, filterDate, filterMonth]);
+
+  const totalValue = filtered.reduce((sum, s) => sum + parseFloat(s.total_price || '0'), 0);
+
+  const inputCls = "bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-red-500/50 placeholder:text-gray-500";
+
+  if (loading) return <div className="flex items-center justify-center py-20 text-gray-400 text-sm">Loading recap slots...</div>;
+
+  return (
+    <div className="space-y-4">
+      {/* Stats row */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          ['Total Held', data?.by_status?.held ?? 0, 'text-green-400'],
+          ['Paying', data?.by_status?.paying ?? 0, 'text-yellow-400'],
+          ['Paid', data?.by_status?.paid ?? 0, 'text-blue-400'],
+        ].map(([label, val, color]) => (
+          <div key={label as string} className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+            <p className="text-gray-500 text-xs mb-1">{label}</p>
+            <p className={`text-2xl font-bold ${color}`}>{val}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <div className="flex gap-1">
+          {['all', 'april', 'may', 'june'].map(m => (
+            <button key={m} onClick={() => setFilterMonth(m)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                filterMonth === m ? 'bg-red-600 text-white' : 'bg-gray-800 border border-gray-700 text-gray-400 hover:text-white'
+              }`}>
+              {m === 'all' ? 'All' : m}
+            </button>
+          ))}
+        </div>
+        <input className={inputCls} placeholder="Filter date (e.g. 15/04)" value={filterDate}
+          onChange={e => setFilterDate(e.target.value)} style={{ width: 160 }} />
+        {filterDate && (
+          <button onClick={() => setFilterDate('')} className="text-xs text-red-400 hover:text-red-300">Clear</button>
+        )}
+        <button onClick={load} className="ml-auto flex items-center gap-1.5 text-xs text-gray-400 hover:text-white bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-lg">
+          <RefreshCw className="w-3 h-3" /> Refresh
+        </button>
+        <span className="text-xs text-gray-500">{filtered.length} slots · <span className="text-green-400 font-semibold">€{totalValue.toLocaleString()}</span></span>
+      </div>
+
+      {/* Table */}
+      {filtered.length === 0 ? (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col items-center justify-center py-16">
+          <Lock className="w-8 h-8 text-gray-600 mb-3" />
+          <p className="text-gray-500 text-sm">No recap slots found</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-gray-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 bg-gray-900/80">
+                {['#', 'Date', 'Time', 'Ticket', 'Visitors', 'Price', 'Status', 'Age', 'RecapID'].map(h => (
+                  <th key={h} className="text-left px-3 py-2.5 text-xs text-gray-500 font-medium whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((s, i) => (
+                <tr key={s.id} className={`border-b border-gray-800/50 ${i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-900/50'} hover:bg-gray-800/50 transition-colors`}>
+                  <td className="px-3 py-2 text-gray-500 text-xs">#{s.id}</td>
+                  <td className="px-3 py-2 text-white font-mono text-xs">{s.date}</td>
+                  <td className="px-3 py-2 text-green-400 font-mono text-xs font-semibold">{s.slot_time}</td>
+                  <td className="px-3 py-2 text-gray-300 text-xs max-w-[160px] truncate">{s.ticket_name?.replace('Musei Vaticani - ', '')}</td>
+                  <td className="px-3 py-2 text-gray-300 text-xs">👥 {s.visitors}</td>
+                  <td className="px-3 py-2 text-green-400 text-xs font-semibold">€{s.total_price}</td>
+                  <td className="px-3 py-2">
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      s.status === 'held' ? 'bg-green-900/50 text-green-400' :
+                      s.status === 'paying' ? 'bg-yellow-900/50 text-yellow-400' :
+                      'bg-blue-900/50 text-blue-400'
+                    }`}>{s.status}</span>
+                  </td>
+                  <td className="px-3 py-2 text-gray-500 text-xs">{s.age_hours}h</td>
+                  <td className="px-3 py-2 text-gray-600 text-xs font-mono truncate max-w-[120px]">{s.recap_id}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function AdminPanel() {
   const router = useRouter();
-  const [view, setView] = useState<'dashboard' | 'agencies' | 'users' | 'tasks'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'agencies' | 'users' | 'tasks' | 'recap'>('dashboard');
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -157,7 +278,7 @@ export default function AdminPanel() {
 
       {/* Nav */}
       <div className="flex gap-1 px-4 pt-3 overflow-x-auto scrollbar-hide">
-        {([['dashboard', BarChart3], ['agencies', Building2], ['users', Users], ['tasks', Activity]] as any[]).map(([key, Icon]) => (
+        {([['dashboard', BarChart3], ['agencies', Building2], ['users', Users], ['tasks', Activity], ['recap', Lock]] as any[]).map(([key, Icon]) => (
           <button key={key} onClick={() => setView(key)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium capitalize transition-colors whitespace-nowrap ${view === key ? 'bg-red-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
             <Icon className="w-4 h-4" />{key}
@@ -285,9 +406,10 @@ export default function AdminPanel() {
             ))}
           </div>
         )}
-      </div>
+        {/* Recap */}
+        {view === 'recap' && <RecapView />}
 
-      {/* Modal */}
+      </div>
       {modal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md p-6 space-y-4">

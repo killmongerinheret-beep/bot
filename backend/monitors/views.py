@@ -878,6 +878,132 @@ def list_held_slots(request):
     return Response({'results': data, 'count': len(data)})
 
 
+@api_view(['GET'])
+def get_available_slots(request):
+    """
+    Get available slots for browser extension auto-booking.
+    Returns slots that are currently held and ready to be booked.
+    
+    Query params:
+    - status: Filter by status (default: 'held')
+    - limit: Max number of slots to return (default: 10)
+    """
+    from .models import HeldSlot
+    from django.core.cache import cache
+    
+    # Get query parameters
+    status_filter = request.GET.get('status', 'held')
+    limit = int(request.GET.get('limit', 10))
+    
+    # Check authentication
+    auth_header = request.headers.get('Authorization', '')
+    session_data = None
+    if auth_header.startswith('Bearer '):
+        token = auth_header.replace('Bearer ', '')
+        session_data = cache.get(f"session:{token}")
+    
+    # Get held slots
+    if session_data and session_data.get('is_super_admin'):
+        holds = HeldSlot.objects.all()
+    else:
+        agency = _get_agency_from_request(request)
+        if not agency:
+            # No auth - return test slots only (for extension testing)
+            holds = HeldSlot.objects.filter(slot_id__startswith='TEST')
+            if holds.count() == 0:
+                return Response({'slots': [], 'count': 0})
+        else:
+            holds = HeldSlot.objects.filter(task__agency=agency)
+    
+    # Filter by status
+    if status_filter != 'all':
+        holds = holds.filter(status=status_filter)
+    
+    # Order by date and limit
+    holds = holds.order_by('date', 'slot_time')[:limit]
+    
+    # Format slots for extension
+    slots = []
+    for h in holds:
+        # Get task and buyer profile
+        task = h.task
+        agency = task.agency if task else None
+        buyer_profile = agency.buyer_profile if agency and hasattr(agency, 'buyer_profile') else None
+        
+        # Parse participants from task or buyer profile
+        participants = []
+        if task and task.participants_json:
+            try:
+                import json
+                participants = json.loads(task.participants_json)
+            except:
+                pass
+        
+        # If no task participants, use buyer profile participants
+        if not participants and buyer_profile and buyer_profile.participants_json:
+            try:
+                import json
+                participants = json.loads(buyer_profile.participants_json)
+            except:
+                pass
+        
+        # If still no participants, create from buyer profile
+        if not participants and buyer_profile:
+            participants = [{
+                'first_name': buyer_profile.first_name,
+                'last_name': buyer_profile.last_name
+            }] * h.visitors
+        
+        # Build slot data
+        slot_data = {
+            'id': h.id,
+            'date': h.date,  # DD/MM/YYYY format
+            'time': h.slot_time,  # HH:MM format
+            'ticket_id': h.ticket_id,
+            'ticket_name': h.ticket_name,
+            'visitors': h.visitors,
+            'adult_count': h.adult_count,
+            'child_count': h.child_count,
+            'language': getattr(task, 'language', None) if task else None,
+            'status': h.status,
+            'hold_started_at': h.hold_started_at.isoformat() if h.hold_started_at else None,
+        }
+        
+        # Add profile data if available
+        if buyer_profile:
+            slot_data['profile'] = {
+                'first_name': buyer_profile.first_name,
+                'last_name': buyer_profile.last_name,
+                'email': buyer_profile.email,
+                'phone': buyer_profile.phone,
+                'city': buyer_profile.city,
+                'country': buyer_profile.country,
+                'birth_date': buyer_profile.birth_date.isoformat() if buyer_profile.birth_date else None,
+                'gender': buyer_profile.gender,
+                'language': buyer_profile.language,
+            }
+            
+            # Add card data if available (for auto-pay)
+            if buyer_profile.card_number:
+                slot_data['card'] = {
+                    'number': buyer_profile.card_number,
+                    'expiry': buyer_profile.card_expiry,
+                    'cvv': buyer_profile.card_cvv,
+                    'holder': buyer_profile.card_holder,
+                }
+        
+        # Add participants
+        slot_data['participants'] = participants[:h.visitors]  # Limit to visitor count
+        
+        slots.append(slot_data)
+    
+    return Response({
+        'slots': slots,
+        'count': len(slots),
+        'timestamp': timezone.now().isoformat()
+    })
+
+
 @api_view(['POST'])
 def mark_slot_paid(request):
     """Mark a held slot as paid — called by local browser agent after successful booking."""
@@ -908,13 +1034,134 @@ def mark_slot_paid(request):
         f"👥 {held.visitors} visitors | €{held.total_price}\n"
         f"🔖 Ref: `{reference}`"
     )
-    groups = TelegramGroup.objects.filter(
-        agency=held.task.agency, status='approved', notification_enabled=True
-    )
-    for g in groups:
-        send_telegram_signal(g.chat_id, msg)
+    # ❌ DISABLED: payment success notifications suppressed — only slot monitoring sends to agencies
+    # groups = TelegramGroup.objects.filter(agency=held.task.agency, status='approved', notification_enabled=True)
+    # for g in groups:
+    #     send_telegram_signal(g.chat_id, msg)
 
     return Response({'success': True, 'hold_id': hold_id, 'reference': reference})
+
+
+@api_view(['POST'])
+def mark_slot_booked(request, slot_id):
+    """
+    Mark a slot as booked after extension completes booking.
+    Called by browser extension after successful auto-booking.
+    
+    Body params:
+    - reference: Optional booking reference number
+    - epay_url: Optional payment URL
+    """
+    from .models import HeldSlot
+    
+    try:
+        slot = HeldSlot.objects.get(id=slot_id)
+        
+        # Update slot status
+        slot.payment_ready = True
+        slot.status = 'paying'
+        
+        # Store optional data
+        reference = request.data.get('reference', '')
+        epay_url = request.data.get('epay_url', '')
+        
+        if epay_url:
+            slot.payment_url = epay_url
+            slot.save(update_fields=['payment_ready', 'status', 'payment_url'])
+        else:
+            slot.save(update_fields=['payment_ready', 'status'])
+        
+        return Response({
+            'success': True,
+            'message': f'Slot {slot_id} marked as booked',
+            'slot': {
+                'id': slot.id,
+                'date': slot.date,
+                'time': slot.slot_time,
+                'status': slot.status
+            }
+        })
+        
+    except HeldSlot.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Slot not found'
+        }, status=404)
+    except Exception as e:
+        logger.error(f"Error marking slot as booked: {e}")
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+@api_view(['POST'])
+def sync_google_sheets(request):
+    """
+    Manually trigger Google Sheets sync for an agency.
+    Can also be used as a webhook endpoint.
+    
+    Body params:
+    - agency_id: ID of agency to sync (optional - syncs all if not provided)
+    - agency_name: Name of agency to sync (alternative to agency_id)
+    
+    Returns:
+    - success: boolean
+    - message: status message
+    - participants_count: number of participants synced
+    """
+    from .models import Agency
+    from .tasks_google_sheets import sync_participants_for_agency, sync_participants_from_sheets
+    
+    try:
+        agency_id = request.data.get('agency_id')
+        agency_name = request.data.get('agency_name')
+        
+        # If specific agency requested
+        if agency_id or agency_name:
+            if agency_name:
+                try:
+                    agency = Agency.objects.get(name__iexact=agency_name, is_active=True)
+                    agency_id = agency.id
+                except Agency.DoesNotExist:
+                    return Response({
+                        'success': False,
+                        'error': f'Agency "{agency_name}" not found'
+                    }, status=404)
+            
+            # Trigger sync for specific agency
+            result = sync_participants_for_agency.delay(agency_id)
+            
+            # Wait for result (max 10 seconds)
+            try:
+                sync_result = result.get(timeout=10)
+                return Response(sync_result)
+            except Exception as e:
+                return Response({
+                    'success': False,
+                    'error': f'Sync task failed: {str(e)}'
+                }, status=500)
+        
+        # Sync all agencies
+        else:
+            result = sync_participants_from_sheets.delay()
+            
+            # Wait for result (max 30 seconds)
+            try:
+                sync_result = result.get(timeout=30)
+                return Response(sync_result)
+            except Exception as e:
+                return Response({
+                    'success': False,
+                    'error': f'Sync task failed: {str(e)}'
+                }, status=500)
+        
+    except Exception as e:
+        logger.error(f"Error triggering Google Sheets sync: {e}")
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
 
 
 @api_view(['GET'])
@@ -1612,11 +1859,22 @@ def generate_test_profile(visitors=2):
 
 
 def _get_agency_from_request(request):
-    """Helper to get agency from session."""
+    """Helper to get agency from session or query params."""
     from .models import Agency
+    
+    # First check query parameters (for extension API calls)
+    agency_id = request.GET.get('agency_id')
+    if agency_id:
+        try:
+            return Agency.objects.filter(id=int(agency_id)).first()
+        except (ValueError, TypeError):
+            pass
+    
+    # Then check session (for web interface)
     agency_id = request.session.get('agency_id')
     if agency_id:
         return Agency.objects.filter(id=agency_id).first()
+    
     return None
 
 
@@ -2025,3 +2283,213 @@ def _error_page(msg):
 display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px;}}
 h2{{color:#ff4d4d;}}p{{color:#888;}}</style></head>
 <body><h2>⚠️ {msg}</h2><p>The hold session may have expired.</p></body></html>"""
+
+
+@api_view(['POST'])
+def create_test_slot(request):
+    """
+    Create a test held slot for extension testing.
+    This checks Vatican's REAL availability first and only creates a slot if something is actually available.
+    Only searches for Vatican Museums general entry tickets or guided tours (not special tickets).
+    """
+    from .models import HeldSlot, MonitorTask, Agency
+    from django.utils import timezone
+    import requests
+    from datetime import datetime, timedelta
+    
+    # Delete any existing test slots first
+    HeldSlot.objects.filter(slot_id__startswith='TEST').delete()
+    
+    # Get parameters from request
+    visitors = request.data.get('visitors', 1)
+    ticket_type = request.data.get('ticket_type', 0)  # 0=standard, 1=guided
+    language = request.data.get('language', 'ENG') if ticket_type == 1 else None
+    
+    # Check next 90 days for availability (Vatican opens tickets 2-3 months in advance)
+    today = datetime.now()
+    available_slot = None
+    
+    logger.info(f"🔍 Searching for Vatican Museums tickets in next 90 days (visitors={visitors}, ticket_type={ticket_type})")
+    
+    # Exclusion list - same as bot
+    EXCLUDED_KEYWORDS = ['pellegrinaggi', 'lunch', 'pranzo', 'gruppi', 'specola', 'palazzo', 'didattiche', 'scuole', 'giardini']
+    
+    # Check every 7 days to speed up search (day 7, 14, 21, 28, etc.)
+    # If we find availability, we'll narrow down to find the earliest slot
+    days_to_check = list(range(7, 91, 7))  # Check weeks: 7, 14, 21, ..., 84
+    
+    for days_ahead in days_to_check:  # Check next 90 days (every 7 days)
+        check_date = today + timedelta(days=days_ahead)
+        date_str = check_date.strftime('%d/%m/%Y')
+        
+        try:
+            # Step 1: Call Search API to get ticket IDs
+            search_url = "https://tickets.museivaticani.va/api/search/resultPerTag"
+            tag = "MV-Visite-Guidate" if ticket_type == 1 else "MV-Biglietti"
+            
+            search_params = {
+                'lang': 'it',
+                'visitorNum': str(visitors),
+                'visitDate': date_str,
+                'area': '1',
+                'who': '',
+                'page': '0',
+                'tag': tag
+            }
+            
+            search_response = requests.get(search_url, params=search_params, timeout=10)
+            if search_response.status_code != 200:
+                continue
+                
+            search_data = search_response.json()
+            visits = search_data.get('visits', [])
+            
+            if not visits:
+                continue
+            
+            # Find Vatican Museums general entry ticket (filter out special tickets)
+            target_ticket = None
+            for visit in visits:
+                if visit.get('availability') != 'AVAILABLE':
+                    continue
+                
+                name_lower = visit.get('name', '').lower()
+                
+                # Skip excluded tickets
+                if any(excluded in name_lower for excluded in EXCLUDED_KEYWORDS):
+                    logger.debug(f"Skipping excluded ticket: {visit.get('name')}")
+                    continue
+                
+                # For standard tickets: look for "Musei Vaticani" + "Biglietti d'ingresso"
+                if ticket_type == 0:
+                    if 'musei vaticani' in name_lower and 'bigliett' in name_lower and 'ingresso' in name_lower:
+                        target_ticket = visit
+                        logger.info(f"✅ Found Vatican Museums ticket: {visit.get('name')}")
+                        break
+                # For guided tours: look for "Visita Guidata" or "Guided Tour"
+                else:
+                    if any(kw in name_lower for kw in ['visita guidata', 'guided tour', 'visite guidate']):
+                        target_ticket = visit
+                        logger.info(f"✅ Found guided tour: {visit.get('name')}")
+                        break
+            
+            if not target_ticket:
+                logger.debug(f"No Vatican Museums tickets found for {date_str}")
+                continue
+            
+            ticket_id = str(target_ticket['id'])
+            ticket_name = target_ticket.get('name', 'Vatican Museums')
+            
+            # Step 2: Check time availability
+            timeavail_url = "https://tickets.museivaticani.va/api/visit/timeavail"
+            timeavail_params = {
+                'lang': 'it',
+                'visitLang': language if language else '',
+                'visitTypeId': ticket_id,
+                'visitorNum': str(visitors),
+                'visitDate': date_str
+            }
+            
+            cookies = {'JSESSIONID': search_response.cookies.get('JSESSIONID', '')}
+            time_response = requests.get(timeavail_url, params=timeavail_params, cookies=cookies, timeout=10)
+            
+            if time_response.status_code != 200:
+                continue
+            
+            time_data = time_response.json()
+            timetable = time_data.get('timetable', [])
+            
+            # Find first available time slot
+            for slot in timetable:
+                if slot.get('availability') == 'AVAILABLE':
+                    available_slot = {
+                        'date': date_str,
+                        'time': slot['time'],
+                        'ticket_id': ticket_id,
+                        'ticket_name': ticket_name,
+                        'visitors': visitors,
+                        'language': language
+                    }
+                    logger.info(f"✅ Found available slot: {date_str} {slot['time']} - {ticket_name}")
+                    break
+            
+            if available_slot:
+                break
+                
+        except Exception as e:
+            logger.error(f"Error checking {date_str}: {e}")
+            continue
+    
+    # If no availability found, return error
+    if not available_slot:
+        return Response({
+            'success': False,
+            'error': 'No Vatican Museums tickets available in the next 90 days',
+            'message': 'Vatican Museums has no general entry or guided tour availability in the next 3 months. Tickets may not be released yet, or all slots are sold out.'
+        }, status=404)
+    
+    # Create test agency and task
+    agency, _ = Agency.objects.get_or_create(
+        name="Test Agency",
+        defaults={
+            'telegram_chat_id': '123456789',
+            'is_active': True
+        }
+    )
+    
+    task, _ = MonitorTask.objects.get_or_create(
+        agency=agency,
+        site='vatican',
+        ticket_name=available_slot['ticket_name'],
+        defaults={
+            'dates': [available_slot['date']],
+            'preferred_times': [],
+            'visitors': visitors,
+            'is_active': True,
+            'tier': 'hold',
+            'language': language
+        }
+    )
+    
+    # Create held slot with REAL available data
+    held_slot = HeldSlot.objects.create(
+        task=task,
+        date=available_slot['date'],
+        slot_time=available_slot['time'],
+        slot_id=f'TEST_SLOT_{timezone.now().timestamp()}',
+        ticket_id=available_slot['ticket_id'],
+        ticket_name=available_slot['ticket_name'],
+        visitors=visitors,
+        adult_count=visitors,
+        child_count=0,
+        total_price=35.00 * visitors,
+        status='held',
+        hold_started_at=timezone.now(),
+        last_keepalive_at=timezone.now()
+    )
+    
+    return Response({
+        'success': True,
+        'slot_id': held_slot.id,
+        'date': held_slot.date,
+        'time': held_slot.slot_time,
+        'ticket_name': held_slot.ticket_name,
+        'visitors': held_slot.visitors,
+        'message': f'✅ Vatican Museums ticket found! {held_slot.date} at {held_slot.slot_time}. Extension should detect it within 10 seconds.',
+        'is_real_availability': True
+    })
+
+
+@api_view(['DELETE'])
+def delete_test_slots(request):
+    """Delete all test held slots."""
+    from .models import HeldSlot
+    
+    # Delete test slots (slot_id starts with TEST)
+    deleted_count = HeldSlot.objects.filter(slot_id__startswith='TEST').delete()[0]
+    
+    return Response({
+        'success': True,
+        'deleted_count': deleted_count,
+        'message': f'Deleted {deleted_count} test slot(s)'
+    })

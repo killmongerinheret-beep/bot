@@ -178,7 +178,7 @@ def get_trigger_group():
 def get_pending_slots():
     """Poll the server for held slots that need browser checkout."""
     try:
-        r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=8, proxies={'http': None, 'https': None})
+        r = requests.get(f'{SERVER_URL}/api/v1/holds/?status=held', timeout=8, proxies={'http': None, 'https': None})
         if r.status_code == 200:
             return r.json().get('results', [])
     except Exception:

@@ -149,11 +149,11 @@ def answer_callback(callback_query_id: str, text: str = ''):
 
 
 def get_telegram_updates():
-    """Long-poll server for pending browser open requests — blocks up to 8s waiting for a job."""
+    """Poll server for pending browser open requests — short poll, returns immediately."""
     try:
         r = requests.get(
-            f'{SERVER_URL}/api/v1/browser-pending/?wait=1&agent_id={AGENT_ID}',
-            timeout=12, proxies={'http': None, 'https': None}
+            f'{SERVER_URL}/api/v1/browser-pending/?agent_id={AGENT_ID}',
+            timeout=5, proxies={'http': None, 'https': None}
         )
         if r.status_code == 200:
             return r.json().get('requests', [])
@@ -177,7 +177,7 @@ def get_trigger_group():
 def get_pending_slots():
     """Poll the server for held slots that need browser checkout."""
     try:
-        r = requests.get(f'{SERVER_URL}/api/v1/held-slots/?status=held', timeout=8, proxies={'http': None, 'https': None})
+        r = requests.get(f'{SERVER_URL}/api/v1/holds/?status=held', timeout=8, proxies={'http': None, 'https': None})
         if r.status_code == 200:
             return r.json().get('results', [])
     except Exception:
@@ -747,7 +747,7 @@ async def main():
     logger.info(f"Press Ctrl+C to stop\n")
     logger.info("Polling Vatican server for slots...")
 
-    send_telegram(ADMIN_CHAT_ID, f"🤖 Browser Agent `{AGENT_ID}` started\nWaiting for jobs...")
+    send_telegram(ADMIN_CHAT_ID, f"🤖 Browser Agent `{AGENT_ID}` started\nPolling for jobs...")
 
     # pending_browser: hold_id → slot dict (waiting for button click)
     pending_browser = {}
@@ -868,8 +868,8 @@ async def main():
         except Exception as e:
             logger.error(f"Main loop error: {e}")
 
-        # Long-poll already waits up to 8s — minimal sleep to avoid hammering on errors
-        await asyncio.sleep(0.1)
+        # Short-poll: sleep 2s between checks
+        await asyncio.sleep(2)
 
 
 if __name__ == '__main__':

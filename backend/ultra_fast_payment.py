@@ -274,13 +274,6 @@ def get_card_details(profile_name='default'):
 
 
 def send_payment_confirmation(held_slot):
-    """Send instant payment confirmation."""
-    from .notification_utils import send_telegram_message
-    
-    message = f"✅ PAYMENT CONFIRMED\n" \
-              f"📅 {held_slot.date} {held_slot.slot_time}\n" \
-              f"👥 {held_slot.visitors} visitors\n" \
-              f"💰 €{held_slot.total_price}\n" \
-              f"🔗 {held_slot.recap_id}"
-    
-    send_telegram_message(held_slot.task.agency.telegram_chat_id, message)
+    """Payment confirmation — DISABLED: only slot monitoring sends to agencies."""
+    # ❌ DISABLED
+    return

@@ -13,6 +13,8 @@ from .models import MonitorTask, CheckResult, Agency, Proxy, SiteCredential
 # 1. Clean Imports
 logger = logging.getLogger(__name__)
 
+from .deep_scan import DeepDiscoveryEngine
+
 # VaticanPro is legacy class that may not exist
 VaticanPro = None
 
@@ -66,7 +68,8 @@ def normalize_date(date_str):
         # Skip past dates
         today = date_type.today()
         if dt < today:
-            logger.info(f"⏭️ Skipping past date: {date_str} ({dt})")
+            # ✅ FIX BUG #3: Log at debug level to reduce noise (still visible if needed)
+            logger.debug(f"⏭️ Skipping past date: {date_str} ({dt})")
             return None
 
         return dt.strftime('%d/%m/%Y')
@@ -1133,7 +1136,15 @@ def run_shared_vatican_monitor(ticket_type, language, dates):
         return str(e)
 
 def send_telegram_signal(chat_id, message):
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") 
+    try:
+        from .models import TelegramGroup
+        group = TelegramGroup.objects.filter(chat_id=str(chat_id)).first()
+        if group and not group.notification_enabled:
+            logger.info(f"🔕 Notifications disabled for group: {chat_id}")
+            return
+    except Exception:
+        pass
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         logger.error("No TELEGRAM_BOT_TOKEN configured")
         return
@@ -1680,25 +1691,50 @@ def send_daily_summary():
         for agency_id, data in agencies.items():
             agency = data['agency']
             tasks = data['tasks']
-            
-            if not agency.telegram_chat_id:
-                continue
-                
-            # Build report
-            vatican_count = sum(1 for t in tasks if t.site == 'vatican')
-            
-            message = f"📊 *DAILY MONITORING REPORT*\n\n"
-            message += f"🤖 *Bot Status:* Online & Checking\n"
-            message += f"📋 *Active Monitors:* {len(tasks)}\n"
-            message += f"   • Vatican: {vatican_count}\n\n"
-            
-            message += f"💡 *Tip:* Use /status to see real-time details or /add to create new monitors."
-            
-            send_telegram_signal(agency.telegram_chat_id, message)
-            logger.info(f"✅ Daily summary sent to {agency.name}")
+
+            # ❌ DISABLED: daily summary notifications suppressed
+            # Only slot monitoring sends to agencies
+            continue
             
         return f"Sent summaries to {len(agencies)} agencies"
         
     except Exception as e:
         logger.error(f"Failed to send daily summary: {e}")
         return f"Failed: {str(e)}"
+# 🚀 100-TICKET STRATEGY: NEW TASKS
+
+@shared_task(name="run_deep_scan", queue="vatican")
+def run_deep_scan(date, chat_id=None):
+    """
+    Perform a comprehensive scan across all visitor counts for a specific date.
+    """
+    try:
+        engine = DeepDiscoveryEngine(target_date=date)
+        results = engine.run()
+        report = engine.format_report(results)
+        
+        if chat_id:
+            from .notification_utils import send_telegram_signal
+            send_telegram_signal(chat_id, report)
+            
+        return f"Deep scan for {date} complete."
+    except Exception as e:
+        logger.error(f"Deep scan failed: {e}")
+        return f"Error: {e}"
+
+
+@shared_task(name="run_bulk_discovery", queue="vatican")
+def run_bulk_discovery(date_from, date_to, target_tickets=100):
+    """
+    Automated job to reach the ticket target using the fallback strategy.
+    6px -> 4px -> 3px -> 2px.
+    """
+    from .tasks_bulk_hold import bulk_hold_scan
+    from .models import BulkHoldConfig, Agency
+    
+    # This task effectively configures and triggers BulkHoldConfig objects
+    # based on the 100-ticket goal.
+    
+    # For now, we reuse the existing bulk_hold_scan logic but ensure it's
+    # triggered with the fallback strategy in mind.
+    return bulk_hold_scan()

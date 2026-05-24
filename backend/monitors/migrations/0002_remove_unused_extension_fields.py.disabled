@@ -1,0 +1,35 @@
+# Generated migration to remove unused fields after extension integration
+# These fields are no longer needed as the browser extension handles all booking automation
+
+from django.db import migrations
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('monitors', '0001_initial'),  # Adjust this to your latest migration
+    ]
+
+    operations = [
+        # Remove unused fields from MonitorTask
+        migrations.RemoveField(
+            model_name='monitortask',
+            name='checkout_method',
+        ),
+        migrations.RemoveField(
+            model_name='monitortask',
+            name='pay_mode',
+        ),
+        migrations.RemoveField(
+            model_name='monitortask',
+            name='remote_worker_needed',
+        ),
+        migrations.RemoveField(
+            model_name='monitortask',
+            name='remote_worker_claimed',
+        ),
+        migrations.RemoveField(
+            model_name='monitortask',
+            name='agent_target',
+        ),
+    ]

@@ -1,0 +1,75 @@
+# ============================================================================
+# UPDATE YOUR backend/monitors/views.py mark_slot_booked function
+# ============================================================================
+
+# Find the mark_slot_booked function and update it to include Google Sheets update:
+
+@api_view(['POST'])
+def mark_slot_booked(request, slot_id):
+    """
+    Mark a slot as booked after extension completes booking.
+    Also updates Google Sheets status.
+    """
+    from .models import HeldSlot
+    # ========== ADD THIS IMPORT ==========
+    from services.booking_sync_service import BookingSyncService
+    # ========== END ADD ==========
+    
+    try:
+        slot = HeldSlot.objects.get(id=slot_id)
+        
+        # Update slot status
+        slot.payment_ready = True
+        slot.status = 'paying'
+        
+        # Store optional data
+        reference = request.data.get('reference', '')
+        epay_url = request.data.get('epay_url', '')
+        
+        if epay_url:
+            slot.payment_url = epay_url
+            slot.save(update_fields=['payment_ready', 'status', 'payment_url'])
+        else:
+            slot.save(update_fields=['payment_ready', 'status'])
+        
+        # ========== ADD THIS SECTION ==========
+        # Update Google Sheets if task has external_reference
+        if slot.task and slot.task.external_reference:
+            try:
+                sync_service = BookingSyncService()
+                sync_service.update_booking_completion(
+                    slot.task.id,
+                    reference or f'VAT-{slot.id}'
+                )
+                logger.info(f"Updated Google Sheets for task {slot.task.id}")
+            except Exception as e:
+                logger.error(f"Error updating Google Sheets: {e}")
+                # Don't fail the request if sheet update fails
+        # ========== END ADD ==========
+        
+        return Response({
+            'success': True,
+            'message': f'Slot {slot_id} marked as booked',
+            'slot': {
+                'id': slot.id,
+                'date': slot.date,
+                'time': slot.slot_time,
+                'status': slot.status
+            }
+        })
+        
+    except HeldSlot.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Slot not found'
+        }, status=404)
+    except Exception as e:
+        logger.error(f"Error marking slot as booked: {e}")
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+# ============================================================================
+# That's it! Just add the Google Sheets update section to mark_slot_booked
+# ============================================================================

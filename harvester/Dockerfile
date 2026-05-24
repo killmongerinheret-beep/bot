@@ -41,5 +41,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Create non-root user for Chrome
+RUN groupadd -r harvester && useradd -r -g harvester -G audio,video harvester \
+    && mkdir -p /home/harvester/Downloads \
+    && chown -R harvester:harvester /app /home/harvester
+
+# Switch to non-root user
+USER harvester
+
 # Run harvester
 CMD ["python", "harvester.py"]
